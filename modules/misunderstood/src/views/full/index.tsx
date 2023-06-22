@@ -109,7 +109,7 @@ export default class MisunderstoodMainView extends React.Component<Props, State>
 
   setEventsStatus = async (selectedStatus: FLAGGED_MESSAGE_STATUS) => {
     await this.setStateP({ selectedStatus, events: null, selectedEventIndex: null, selectedEvent: null })
-    const events = await this.fetchEvents(this.state.language, selectedStatus)
+    const events = await this.fetchEvents(this.state.language, selectedStatus, null, this.state.reason)
     await this.setStateP({ events })
     await this.setEventIndex(0)
     await this.updateEventsCounts()
@@ -199,6 +199,9 @@ export default class MisunderstoodMainView extends React.Component<Props, State>
       FLAGGED_MESSAGE_STATUS.pending,
       resolutionData
     )
+
+    await this.setStateP({ checkedEventIds: [], selectAllChecked: false })
+
     return this.alterEventsList(
       FLAGGED_MESSAGE_STATUS.new,
       FLAGGED_MESSAGE_STATUS.pending,

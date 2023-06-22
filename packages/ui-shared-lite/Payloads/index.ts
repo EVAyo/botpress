@@ -5,6 +5,7 @@ interface ExtraChoiceProperties {
   isDropdown: boolean
   dropdownPlaceholder: string
   disableFreeText: boolean
+  displayInMessage: boolean
 }
 
 interface ExtraDropdownProperties {
@@ -70,9 +71,11 @@ const renderChoicePayload = (content: sdk.ChoiceContent & ExtraChoiceProperties)
       message: content.text,
       buttonText: '',
       displayInKeyboard: true,
-      options: content.choices.map(c => ({ label: c.title, value: c.value.toUpperCase() })),
+      options: content.choices.map(c => ({ label: c.title, value: c.value?.toUpperCase() })),
       width: 300,
-      placeholderText: content.dropdownPlaceholder
+      placeholderText: content.dropdownPlaceholder,
+      disableFreeText: content.disableFreeText,
+      displayInMessage: content.displayInMessage
     }
   }
   return {
@@ -81,13 +84,14 @@ const renderChoicePayload = (content: sdk.ChoiceContent & ExtraChoiceProperties)
     component: 'QuickReplies',
     quick_replies: content.choices.map(c => ({
       title: c.title,
-      payload: c.value.toUpperCase()
+      payload: c.value?.toUpperCase()
     })),
     disableFreeText: content.disableFreeText,
     wrapped: {
       type: 'text',
       ...omit(content, 'choices', 'type')
-    }
+    },
+    displayInMessage: content.displayInMessage
   }
 }
 
@@ -111,7 +115,7 @@ const renderDropdownPayload = (content: sdk.DropdownContent & ExtraDropdownPrope
 
 const renderImagePayload = (content: sdk.ImageContent & CollectFeedback) => {
   return {
-    type: 'file',
+    type: 'image',
     title: content.title,
     url: formatUrl('', content.image),
     collectFeedback: content.collectFeedback
@@ -140,7 +144,7 @@ const renderFilePayload = (content: sdk.FileContentType & CollectFeedback) => {
   return {
     type: 'file',
     title: content.title,
-    file: formatUrl('', content.file),
+    url: formatUrl('', content.file),
     collectFeedback: content.collectFeedback
   }
 }
@@ -176,7 +180,8 @@ const renderCarouselPayload = (content: sdk.CarouselContent & CollectFeedback) =
         } else {
           throw new Error(`Webchat carousel does not support "${a.action}" action-buttons at the moment`)
         }
-      })
+      }),
+      markdown: card.markdown
     }))
   }
 }

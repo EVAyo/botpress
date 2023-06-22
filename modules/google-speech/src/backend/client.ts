@@ -117,9 +117,9 @@ export class GoogleSpeechClient {
         debugSpeechToText('Audio file successfully re-sampled')
 
         meta = await mm.parseBuffer(buffer)
-
-        encoding = AudioEncoding.OGG_OPUS
       }
+
+      encoding = AudioEncoding.OGG_OPUS
     } else if (container === Container['ebml/webm'] && codec === Codec.opus) {
       encoding = AudioEncoding.WEBM_OPUS
     } else if (container === Container['iso5/isom/hlsf'] && codec === Codec['mpeg-4/aac']) {
@@ -147,7 +147,7 @@ export class GoogleSpeechClient {
       return
     }
 
-    debugSpeechToText(`Audio file metadata: ${meta}`)
+    debugSpeechToText('Audio file metadata:', meta)
 
     // Note that transcription is limited to 60 seconds audio.
     // Use a GCS file for audio longer than 1 minute.
@@ -205,8 +205,10 @@ export class GoogleSpeechClient {
   ): Promise<Uint8Array | string | undefined> {
     debugTextToSpeech(`Received text to convert into audio: ${text}`)
 
+    const hasSSML = !!text.match(/<speak>(.|\n)*<\/speak>/g)?.length
+
     const request: ISynthesizeSpeechRequest = {
-      input: { text },
+      input: hasSSML ? { ssml: text } : { text },
       voice: { languageCode: this.languageCode(language), ssmlGender: this.config.voiceSelection },
       audioConfig: { audioEncoding: 'MP3' } // Always return .mp3 files since it's one of the most recognized audio file type
     }

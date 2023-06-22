@@ -1,3 +1,6 @@
+import truncate from 'html-truncate'
+import React from 'react'
+import Children from 'react-children-utilities'
 import ReactGA from 'react-ga'
 import snarkdown from 'snarkdown'
 
@@ -132,4 +135,71 @@ export const isRTLLocale = (locale: string | undefined | null): boolean => {
   }
 
   return rtlLocales.includes(matches[1])
+}
+
+export const isRTLText = new RegExp(
+  '[' +
+    [
+      '\u0600-\u06FF', // Arabic
+      '\u0750-\u077F', // Arabic Supplement
+      '\u08A0-\u08FF', // Arabic Extended-A
+      '\u0870-\u089F', // Arabic Extended-B
+      '\uFB50-\uFDFF', // Arabic Pres. Forms-A
+      '\uFE70-\uFEFF', // Arabic Pres. Forms-B
+      '\u0780-\u07BF', // Thaana (Dhivehi)
+      '\u0590-\u05FF', // Hebrew
+      '\uFB1D-\uFB4F', // Hebrew Presentation Forms
+      '\u07C0-\u07FF' // N'Ko
+    ].join('') +
+    ']'
+)
+
+export const ProcessedText = (props: {
+  markdown?: boolean
+  escapeHTML?: boolean
+  isBotMessage: boolean
+  maxLength?: number
+  intl?: any
+  showMore?: boolean
+  wrapperProps?: any & { tag: string }
+  children?: string
+}) => {
+  let message
+  let hasShowMore
+  let WrapperTag
+
+  const {
+    markdown = false,
+    escapeHTML = false,
+    isBotMessage = false,
+    maxLength,
+    intl = false,
+    showMore = false,
+    wrapperProps = {},
+    children
+  } = props
+  const { tag, ...rest } = wrapperProps
+
+  const text = Children.onlyText(children)
+
+  if (intl && maxLength && text.length > maxLength) {
+    hasShowMore = true
+  }
+
+  const truncateIfRequired = message => {
+    return hasShowMore && !showMore ? truncate(message, maxLength) : message
+  }
+
+  if (markdown) {
+    const isUserMessage = !isBotMessage
+    const shouldEscapeHTML = isUserMessage || escapeHTML
+    const html = renderUnsafeHTML(text, shouldEscapeHTML)
+    WrapperTag = tag || 'div'
+    message = <WrapperTag {...rest} dangerouslySetInnerHTML={{ __html: truncateIfRequired(html) }} />
+  } else {
+    WrapperTag = tag || 'p'
+    message = <WrapperTag {...rest}>{truncateIfRequired(text)}</WrapperTag>
+  }
+
+  return message
 }

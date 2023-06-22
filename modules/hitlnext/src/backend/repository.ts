@@ -1,4 +1,3 @@
-import { MessagingClient } from '@botpress/messaging-client'
 import axios from 'axios'
 import * as sdk from 'botpress/sdk'
 import { BPRequest } from 'common/http'
@@ -58,7 +57,6 @@ const userColumnsPrefixed = userColumns.map(s => userPrefix.concat(':', s))
 export default class Repository {
   private agentCache: Dic<Omit<IAgent, 'online'>> = {}
   private cacheByVisitor: LRUCache<string, UserMapping>
-  private messagingClients: { [botId: string]: MessagingClient } = {}
 
   /**
    *
@@ -529,7 +527,7 @@ export default class Repository {
   listMessages = (botId: string, threadId: string, conditions: CollectionConditions = {}) => {
     return this.bp.events.findEvents(
       { botId, threadId },
-      { count: conditions.limit, sortOrder: [{ column: 'id', desc: true }] }
+      { count: conditions.limit, sortOrder: [{ column: 'createdOn', desc: true }] }
     )
   }
 
@@ -537,16 +535,24 @@ export default class Repository {
   // Copy pasted from channel-web db.ts
   //===================================
 
-  async mapVisitor(botId: string, visitorId: string, messaging: MessagingClient) {
+  async mapVisitor(botId: string, visitorId: string) {
     const userMapping = await this.getMappingFromVisitor(botId, visitorId)
+    let userId = userMapping?.userId
 
-    let userId: string
+    const createUserAndMapping = async () => {
+      userId = (await this.bp.messaging.forBot(botId).createUser()).id
+      await this.createUserMapping(botId, visitorId, userId)
+    }
 
     if (!userMapping) {
-      userId = (await messaging.users.create()).id
-      await this.createUserMapping(botId, visitorId, userId)
+      await createUserAndMapping()
     } else {
-      userId = userMapping.userId
+      // Prevents issues when switching between different Messaging servers
+      // TODO: Remove this check once the 'web_user_map' table is removed
+      if (!(await this.checkUserExist(botId, userMapping.userId))) {
+        await this.deleteMappingFromVisitor(botId, visitorId)
+        await createUserAndMapping()
+      }
     }
 
     return userId
@@ -558,15 +564,31 @@ export default class Repository {
       return cached
     }
 
-    const rows = await this.bp.database('web_user_map').where({ botId, visitorId })
+    try {
+      const rows = await this.bp.database('web_user_map').where({ botId, visitorId })
 
-    if (rows?.length) {
-      const mapping = rows[0] as UserMapping
-      this.cacheByVisitor.set(`${botId}_${visitorId}`, mapping)
-      return mapping
+      if (rows?.length) {
+        const mapping = rows[0] as UserMapping
+        this.cacheByVisitor.set(`${botId}_${visitorId}`, mapping)
+        return mapping
+      }
+    } catch (err) {
+      this.bp.logger.error('An error occurred while fetching a visitor mapping.', err)
+
+      return undefined
     }
+  }
 
-    return undefined
+  async deleteMappingFromVisitor(botId: string, visitorId: string): Promise<void> {
+    try {
+      this.cacheByVisitor.del(`${botId}_${visitorId}`)
+      await this.bp
+        .database('web_user_map')
+        .where({ botId, visitorId })
+        .delete()
+    } catch (err) {
+      this.bp.logger.error('An error occurred while deleting a visitor mapping.', err)
+    }
   }
 
   async createUserMapping(botId: string, visitorId: string, userId: string): Promise<UserMapping> {
@@ -584,28 +606,10 @@ export default class Repository {
     }
   }
 
-  async getMessagingClient(botId: string) {
-    const client = this.messagingClients[botId]
-    if (client) {
-      return client
-    }
+  private async checkUserExist(botId: string, userId: string): Promise<boolean> {
+    const user = await this.bp.messaging.forBot(botId).getUser(userId)
 
-    const { messaging } = await this.bp.bots.getBotById(botId)
-
-    const botClient = new MessagingClient({
-      url: process.core_env.MESSAGING_ENDPOINT
-        ? process.core_env.MESSAGING_ENDPOINT
-        : `http://localhost:${process.MESSAGING_PORT}`,
-      password: process.INTERNAL_PASSWORD,
-      auth: { clientId: messaging.id, clientToken: messaging.token }
-    })
-    this.messagingClients[botId] = botClient
-
-    return botClient
-  }
-
-  removeMessagingClient(botId: string) {
-    this.messagingClients[botId] = undefined
+    return user?.id === userId
   }
 
   //===================================

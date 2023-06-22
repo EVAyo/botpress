@@ -3,9 +3,11 @@ import { Dictionary } from 'lodash'
 
 import { MODULE_NAME } from '../constants'
 import en from '../translations/en.json'
+import es from '../translations/es.json'
 import fr from '../translations/fr.json'
 
 import api from './api'
+import flowBuilder from './flowBuilder'
 import { registerMiddleware, unregisterMiddleware } from './middleware'
 import migrate from './migrate'
 import Repository from './repository'
@@ -36,16 +38,21 @@ const onModuleUnmount = async (bp: typeof sdk) => {
   await unregisterMiddleware(bp)
 }
 
-const onBotUnmount = async (bp: typeof sdk, botId: string) => {
-  repository.removeMessagingClient(botId)
-}
+const skills: sdk.Skill[] = [
+  {
+    id: 'HitlNext',
+    icon: 'person',
+    name: 'HITL',
+    flowGenerator: flowBuilder.generateFlow
+  }
+]
 
 const entryPoint: sdk.ModuleEntryPoint = {
   onServerStarted,
   onServerReady,
   onModuleUnmount,
-  onBotUnmount,
-  translations: { en, fr },
+  translations: { en, fr, es },
+  skills,
   definition: {
     name: MODULE_NAME,
     menuIcon: 'headset',

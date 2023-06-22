@@ -22,7 +22,7 @@ export interface DialogConfig {
    * Interval before a session's context expires.
    * e.g. when the conversation is stale and has not reached the END of the flow.
    * This will reset the position of the user in the flow.
-   * @default 2m
+   * @default 25m
    */
   timeoutInterval: string
   /**
@@ -168,7 +168,7 @@ export interface BotpressConfig {
   converse: ConverseConfig
   dialog: DialogConfig
   logs: LogsConfig
-  modules: Array<ModuleConfigEntry>
+  modules: ModuleConfigEntry[]
   pro: {
     /**
      * These strategies are allowed to log on the Admin UI.
@@ -243,6 +243,23 @@ export interface BotpressConfig {
          */
         customCss: string
       }
+      webchat: {
+        /**
+         * Change the name displayed in the title bar on the webchat
+         * @example "Botpress Webchat"
+         */
+        title?: string
+        /**
+         * Replace the default favicon
+         * @example "assets/ui-studio/public/img/favicon.png"
+         */
+        favicon?: string
+        /**
+         * Path to your custom stylesheet
+         * @example "assets/my-stylesheet.css"
+         */
+        customCss: string
+      }
     }
   }
   /**
@@ -281,7 +298,7 @@ export interface BotpressConfig {
     maxFileSize: string
     /**
      * The list of allowed extensions for media file uploads
-     * @default ["image/jpeg","image/png","image/gif","audio/mpeg","video/mp4","application/pdf"]
+     * @default ["image/jpeg","image/png","image/gif","image/bmp","image/webp","audio/mpeg","audio/webm","audio/ogg","audio/wav","video/mp4","video/webm","video/ogg","application/pdf"]
      */
     allowedMimeTypes: string[]
   }
@@ -527,6 +544,15 @@ export interface AuthStrategySaml {
    * @default 5000
    */
   acceptedClockSkewMs: number
+  /**
+   * Logout URL for SAML SLO provided by the IDP.
+   */
+  logoutUrl: string
+  /**
+   * The logout callback URL for SAML SLO. The path provided here is absolute.
+   * For example, http://localhost:3000/api/v1/auth/logout-callback/saml/saml
+   */
+  logoutCallbackUrl: string
 }
 
 export interface AuthStrategyOauth2 {

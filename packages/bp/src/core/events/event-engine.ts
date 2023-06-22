@@ -65,7 +65,8 @@ const eventSchema = {
         .items(joi.string())
         .optional(),
       ms: joi.number().optional(),
-      spellChecked: joi.string().optional()
+      spellChecked: joi.string().optional(),
+      modelId: joi.string().optional()
     })
     .optional()
     .default({})
@@ -90,14 +91,9 @@ const debugOutgoing = debug.sub('outgoing')
 
 @injectable()
 export class EventEngine {
-  public onSendIncoming?: (event: sdk.IO.IncomingEvent) => Promise<void>
-
   public onBeforeIncomingMiddleware?: (event: sdk.IO.IncomingEvent) => Promise<void>
   public onAfterIncomingMiddleware?: (event: sdk.IO.IncomingEvent) => Promise<void>
-
   public onBeforeOutgoingMiddleware?: (event: sdk.IO.OutgoingEvent) => Promise<void>
-
-  public renderForChannel?: (content: any, channel: string) => any[]
 
   private readonly _incomingPerf = new TimedPerfCounter('mw_incoming')
   private readonly _outgoingPerf = new TimedPerfCounter('mw_outgoing')
@@ -116,7 +112,7 @@ export class EventEngine {
     this.incomingQueue.subscribe(async (event: sdk.IO.IncomingEvent) => {
       await this._infoMiddleware(event)
       this.onBeforeIncomingMiddleware && (await this.onBeforeIncomingMiddleware(event))
-      const { incoming } = await this.getBotMiddlewareChains(event.botId)
+      const { incoming } = await this.getMiddlewareChains()
       await incoming.run(event)
       this.onAfterIncomingMiddleware && (await this.onAfterIncomingMiddleware(event))
       this._incomingPerf.record()
@@ -124,7 +120,7 @@ export class EventEngine {
 
     this.outgoingQueue.subscribe(async (event: sdk.IO.OutgoingEvent) => {
       this.onBeforeOutgoingMiddleware && (await this.onBeforeOutgoingMiddleware(event))
-      const { outgoing } = await this.getBotMiddlewareChains(event.botId)
+      const { outgoing } = await this.getMiddlewareChains()
       await outgoing.run(event)
       this._outgoingPerf.record()
 
@@ -189,16 +185,13 @@ export class EventEngine {
   async sendEvent(event: sdk.IO.Event): Promise<void> {
     this.validateEvent(event)
 
-    if (event.debugger) {
-      addStepToEvent(event, StepScopes.Received)
-      this.eventCollector.storeEvent(event)
-    }
+    addStepToEvent(event, StepScopes.Received)
+    this.eventCollector.storeEvent(event)
 
     const isIncoming = (event: sdk.IO.Event): event is sdk.IO.IncomingEvent => event.direction === 'incoming'
     if (isIncoming(event)) {
       debugIncoming.forBot(event.botId, 'send ', event)
       incrementMetric('eventsIn.count')
-      this.onSendIncoming && (await this.onSendIncoming(event))
       await this.incomingQueue.enqueue(event, 1, false)
     } else {
       debugOutgoing.forBot(event.botId, 'send ', event)
@@ -207,7 +200,11 @@ export class EventEngine {
     }
   }
 
-  async replyToEvent(eventDestination: sdk.IO.EventDestination, payloads: any[], incomingEventId?: string) {
+  async replyToEvent(
+    eventDestination: sdk.IO.EventDestination,
+    payloads: any[],
+    incomingEventId?: string
+  ): Promise<void> {
     // prettier-ignore
     const keys: (keyof sdk.IO.EventDestination)[] = ['botId', 'channel', 'target', 'threadId']
 
@@ -236,7 +233,11 @@ export class EventEngine {
     return this.outgoingQueue.isQueueLockedForJob(event)
   }
 
-  private async getBotMiddlewareChains(botId: string) {
+  async waitOutgoingQueueEmpty(event: sdk.IO.IncomingEvent) {
+    return this.outgoingQueue.waitEmpty(event)
+  }
+
+  private async getMiddlewareChains() {
     const incoming = new MiddlewareChain()
     const outgoing = new MiddlewareChain()
 

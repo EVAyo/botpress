@@ -141,7 +141,7 @@ export class ChannelUserRepository {
       .then(res => {
         return {
           id: res.id,
-          attributes: res.attributes,
+          attributes: this.database.knex.json.get(res.attributes),
           channel: res.channel,
           createdOn: res['created_at'],
           updatedOn: res['updated_at']
@@ -183,7 +183,7 @@ export class ChannelUserRepository {
 
     await req
 
-    this.broadcastDeleteUserCache(this.getCacheKey(channel, user_id))
+    await this.broadcastDeleteUserCache(this.getCacheKey(channel, user_id))
   }
 
   async updateAttributes(channel: string, user_id: string, attributes: any): Promise<void> {
@@ -197,7 +197,7 @@ export class ChannelUserRepository {
       .update({ attributes: this.database.knex.json.set({ ...originalAttributes, ...attributes }) })
       .where({ channel, user_id })
 
-    this.broadcastDeleteUserCache(this.getCacheKey(channel, user_id))
+    await this.broadcastDeleteUserCache(this.getCacheKey(channel, user_id))
   }
 
   private async _dataRetentionUpdate(channel: string, user_id: string, attributes: any) {

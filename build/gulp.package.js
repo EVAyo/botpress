@@ -67,6 +67,9 @@ const zipArchive = async ({ osName, binding, tempBin, binaryName }) => {
   archive.directory(`${basePath}/binaries/${osName}/bin`, 'bin')
   archive.directory(`build/native-extensions/${binding}`, `bindings/${binding}`)
   archive.file(`${basePath}/binaries/${tempBin}`, { name: binaryName })
+  if (osName === 'darwin') {
+    archive.file('build/sorry.macos.txt', { name: 'sorry.txt' })
+  }
 
   for (const file of glob.sync(`${basePath}/binaries/modules/*.tgz`)) {
     archive.file(file, { name: `modules/${path.basename(file)}` })
@@ -77,7 +80,7 @@ const zipArchive = async ({ osName, binding, tempBin, binaryName }) => {
 }
 
 const makeTempPackage = () => {
-  const additionalPackageJson = require(path.resolve(__dirname, './package.pkg.json'))
+  const additionalPackageJson = require(path.resolve(__dirname, './package.json'))
   const realPackageJson = require(path.resolve(__dirname, '../package.json'))
   const tempPkgPath = path.resolve(__dirname, '../packages/bp/dist/package.json')
 
@@ -89,25 +92,37 @@ const makeTempPackage = () => {
   }
 }
 
-const fetchExternalBinaries = () => {
+const fetchExternalBinaries = async () => {
   const binOut = path.resolve(__dirname, '../packages/bp/binaries')
 
-  systems.forEach(({ osName, platform }) =>
-    execAsync(`yarn bpd init --output ${path.resolve(binOut, osName)} --platform ${platform}`)
-  )
+  for (const { osName, platform } of systems) {
+    // Since bpd does not exit when there is an error, we must read stderr to know if something went wrong
+    const command = `yarn bpd init --output ${path.resolve(binOut, osName)} --platform ${platform}`
+    const { stderr } = await execAsync(command)
+
+    if (stderr) {
+      const err = new Error()
+      err.cmd = command
+      err.stderr = stderr
+
+      throw err
+    }
+  }
 }
 
 const packageAll = async () => {
   const tempPackage = makeTempPackage()
 
   try {
-    fetchExternalBinaries()
+    await fetchExternalBinaries()
 
     await execAsync(`cross-env pkg --options max_old_space_size=16384 --output ../binaries/bp ./package.json`, {
       cwd: path.resolve(__dirname, '../packages/bp/dist')
     })
   } catch (err) {
-    console.error('Error running: ', err.cmd, '\nMessage: ', err.stderr, err)
+    // We don´t want to create an archive if there was something wrong in the steps above
+    console.error('Error running:', err.cmd, '\nMessage:', err.stderr)
+    process.exit(1)
   } finally {
     tempPackage.remove()
   }

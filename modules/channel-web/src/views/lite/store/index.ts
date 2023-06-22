@@ -36,7 +36,7 @@ class RootStore {
   public composer: ComposerStore
   public view: ViewStore
 
-  private _typingInterval
+  private _typingInterval: ReturnType<typeof setInterval> | undefined
   private api: WebchatApi
 
   @observable
@@ -76,11 +76,10 @@ class RootStore {
   constructor({ fullscreen }) {
     this.composer = new ComposerStore(this)
     this.view = new ViewStore(this, fullscreen)
-    this.updateBotUILanguage(chosenLocale)
   }
 
   @action.bound
-  setIntlProvider(provider) {
+  setIntlProvider(provider: InjectedIntl) {
     this.intl = provider
   }
 
@@ -92,6 +91,11 @@ class RootStore {
   @computed
   get botName(): string {
     return this.config?.botName || this.botInfo?.name || 'Bot'
+  }
+
+  @computed
+  get alwaysScrollDownOnMessages(): boolean {
+    return this.botInfo.alwaysScrollDownOnMessages || false
   }
 
   @computed
@@ -140,7 +144,7 @@ class RootStore {
   }
 
   @action.bound
-  updateMessages(messages) {
+  updateMessages(messages: Message[]) {
     this.currentConversation.messages = messages
   }
 
@@ -273,7 +277,7 @@ class RootStore {
     }
 
     const conversation: CurrentConversation = await this.api.fetchConversation(convoId || this._getCurrentConvoId())
-    if (conversation?.messages) {
+    if (conversation?.messages.length) {
       conversation.messages = conversation.messages.sort(
         (a, b) => new Date(a.sentOn).getTime() - new Date(b.sentOn).getTime()
       )
@@ -314,7 +318,7 @@ class RootStore {
   @action.bound
   async startConversation(): Promise<void> {
     await this.sendData({ type: 'request_start_conversation' })
-    await this.view.toggleBotInfo()
+    this.view.toggleBotInfo()
   }
 
   /** Creates a new conversation and switches to it */
@@ -357,6 +361,10 @@ class RootStore {
   async extractFeedback(messages: Message[]): Promise<void> {
     const feedbackMessageIds = messages.filter(x => x.payload && x.payload.collectFeedback).map(x => x.id)
 
+    if (!feedbackMessageIds.length) {
+      return
+    }
+
     const feedbackInfo = await this.api.getMessageIdsFeedbackInfo(feedbackMessageIds)
     runInAction('-> setFeedbackInfo', () => {
       this.messageFeedbacks = feedbackInfo
@@ -383,6 +391,11 @@ class RootStore {
   /** Sends an event or a message, depending on how the backend manages those types */
   @action.bound
   async sendData(data: any): Promise<void> {
+    if (!this.isInitialized) {
+      console.warn('[webchat] Cannot send data until the webchat is ready')
+      return
+    }
+
     if (!constants.MESSAGE_TYPES.includes(data.type)) {
       return this.api.sendEvent(data, this.currentConversationId)
     }
@@ -415,7 +428,7 @@ class RootStore {
 
     if (!this.api) {
       this.bp = bp
-      this.api = new WebchatApi('', bp.axios)
+      this.api = new WebchatApi(bp.axios)
     }
 
     this._applyConfig()
@@ -427,30 +440,39 @@ class RootStore {
     this.view.disableAnimations = this.config.disableAnimations
     this.config.showPoweredBy ? this.view.showPoweredBy() : this.view.hidePoweredBy()
 
-    const locale = getUserLocale(this.config.locale)
-    this.config.locale && this.updateBotUILanguage(locale)
-    document.documentElement.setAttribute('lang', locale)
+    document.title = this.config.botName || window.APP_NAME
 
-    document.title = this.config.botName || 'Botpress Webchat'
+    if (window.APP_FAVICON) {
+      const link = document.querySelector('link[rel="icon"]')
+      link && link.setAttribute('href', window.APP_FAVICON)
+    }
 
-    try {
-      window.USE_SESSION_STORAGE = this.config.useSessionStorage
-    } catch {
-      console.error('Could not set USE_SESSION_STORAGE')
+    if (window.APP_CUSTOM_CSS) {
+      const sheet = document.createElement('link')
+      sheet.rel = 'stylesheet'
+      sheet.href = window.APP_CUSTOM_CSS
+      sheet.type = 'text/css'
+      document.head.appendChild(sheet)
     }
 
     this.api.updateAxiosConfig({ botId: this.config.botId, externalAuthToken: this.config.externalAuthToken })
-    this.api.updateUserId(this.config.userId)
+
+    if (!this.isInitialized) {
+      window.USE_SESSION_STORAGE = this.config.useSessionStorage
+    } else if (window.USE_SESSION_STORAGE !== this.config.useSessionStorage) {
+      console.warn('[WebChat] "useSessionStorage" value cannot be altered once the webchat is initialized')
+    }
+
+    const locale = this.config.locale ? getUserLocale(this.config.locale) : chosenLocale
+    this.updateBotUILanguage(locale)
+    document.documentElement.setAttribute('lang', locale)
+
     this.publishConfigChanged()
   }
 
-  /** When this method is used, the user ID is changed in the configuration, then the socket is updated */
   @action.bound
-  setUserId(userId: string): void {
-    this.config.userId = userId
-    this.resetConversation()
-    this.api.updateUserId(userId)
-    this.publishConfigChanged()
+  async setCustomUserId(userId: string): Promise<void> {
+    return this.api.setCustomUserId(userId)
   }
 
   @action.bound
@@ -465,6 +487,7 @@ class RootStore {
 
   @action.bound
   async updatePreferredLanguage(lang: string): Promise<void> {
+    this.updateBotUILanguage(lang)
     this.preferredLanguage = lang
     await this.api.updateUserPreferredLanguage(lang)
   }

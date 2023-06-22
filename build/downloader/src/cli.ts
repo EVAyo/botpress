@@ -5,10 +5,22 @@ import cliProgress from 'cli-progress'
 import fse from 'fs-extra'
 import glob from 'glob'
 import { CommonArgs } from 'index'
+import moment from 'moment'
 import path from 'path'
 import rimraf from 'rimraf'
+import yn from 'yn'
 import { downloadFile } from './download'
-import { getReleasedFiles, logger, APP_PREFIX } from './utils'
+import {
+  getReleasedFiles,
+  logger,
+  APP_PREFIX,
+  ProcessedRelease,
+  sanitizeBranch,
+  getBinaries,
+  addFileToMetadata,
+  readMetadataFile,
+  saveMetadataFile
+} from './utils'
 
 export const toolsList = {
   nlu: {
@@ -16,7 +28,7 @@ export const toolsList = {
   },
   studio: {
     url: 'https://api.github.com/repos/botpress/studio/releases'
-  },  
+  },
   messaging: {
     url: 'https://api.github.com/repos/botpress/messaging/releases'
   }
@@ -29,25 +41,43 @@ export const initProject = async (packageLocation: string, common: CommonArgs) =
 
   const packageJson = await fse.readJson(packageLocation)
   for (const toolName of Object.keys(toolsList)) {
-    const toolVersion = packageJson[toolName]?.version || packageJson[toolName]
-    if (!toolVersion) {
+    if (!packageJson[toolName]) {
       logger.info(`Version missing for tool ${toolName} in package.json`)
       continue
     }
 
-    const releases = await getReleasedFiles(toolName, common.platform)
-    const configVersion = releases.find(x => x.version.endsWith(toolVersion))
-    if (!configVersion) {
-      logger.info("Version not found on the tool's release page")
+    let forceDownload = false
+    let binaryInfo: ProcessedRelease | undefined
+    const { version, devBranch } = packageJson[toolName]
+
+    const releases = await getBinaries(toolName, common.platform, devBranch)
+    const devRelease = devBranch && releases.find(x => x.version.endsWith(sanitizeBranch(devBranch)))
+
+    if (devBranch && devRelease && !yn(process.env.IGNORE_DEV_BRANCH)) {
+      logger.info(`Using the binary of branch "${devBranch}"`)
+      binaryInfo = devRelease
+
+      const existingFile = (await readMetadataFile(common.appData))?.[devRelease.fileName]
+
+      if (existingFile?.fileId !== devRelease.fileId) {
+        forceDownload = true
+        logger.info('A new binary was published for that branch, re-downloading it...')
+      }
+    } else {
+      binaryInfo = releases.find(x => x.version.endsWith(version))
+    }
+
+    if (!binaryInfo) {
+      logger.info("Specified version not found on the tool's release page. Using existing binary.")
       continue
     }
 
-    const location = path.resolve(common.appData, 'tools', toolName, configVersion?.fileName)
-    if (await fse.pathExists(location)) {
-      await useFile(toolName, toolVersion, common)
+    const location = path.resolve(common.appData, 'tools', toolName, binaryInfo.fileName)
+    if ((await fse.pathExists(location)) && !forceDownload) {
+      await useFile(toolName, binaryInfo.version, common)
     } else {
-      await installFile(toolName, common, configVersion.version)
-      await useFile(toolName, configVersion.version, common)
+      await installFile(toolName, common, binaryInfo.version)
+      await useFile(toolName, binaryInfo.version, common)
     }
   }
 }
@@ -98,12 +128,33 @@ export const cleanFiles = async (storageLocation: string) => {
   }
 }
 
+export const cleanOutdatedBinaries = async ({ appData }: CommonArgs) => {
+  const entries = await readMetadataFile(appData)
+  if (!entries) {
+    return
+  }
+
+  for (const fileName of Object.keys(entries)) {
+    const { installDate } = entries[fileName]
+
+    if (!installDate || moment().diff(moment(installDate), 'd') > 7) {
+      const fileType = fileName.split('-')[0]
+      const file = path.resolve(appData, 'tools', fileType, fileName)
+
+      await fse.remove(file)
+      delete entries[fileName]
+    }
+  }
+
+  await saveMetadataFile(entries, appData)
+}
+
 export const installFile = async (toolName: string, common: CommonArgs, toolVersion?: string) => {
   if (!toolsList[toolName]) {
     return logger.error('Invalid tool name')
   }
 
-  const releases = await getReleasedFiles(toolName, common.platform)
+  const releases = await getBinaries(toolName, common.platform, toolVersion)
   const release = !toolVersion ? releases[0] : releases.find(x => x.version.endsWith(toolVersion))
 
   if (!release) {
@@ -132,11 +183,14 @@ export const installFile = async (toolName: string, common: CommonArgs, toolVers
   } finally {
     downloadProgressBar.stop()
   }
+
+  await addFileToMetadata(release, common.appData)
 }
 
 export const useFile = async (toolName: string, version: string, common: CommonArgs) => {
   const toolFolder = path.resolve(common.appData, 'tools', toolName)
-  const underscoreVersion = version.replace(/\./g, '_')
+  const underscoreVersion = version.replace(/[\W_]+/g, '_')
+
   const matchingFile = await Promise.fromCallback<string[]>(cb =>
     glob(`*${underscoreVersion}-${common.platform.replace('win32', 'win')}*`, { cwd: toolFolder }, cb)
   )

@@ -6,12 +6,13 @@ import { Request, Router, Response } from 'express'
 import _ from 'lodash'
 import moment from 'moment'
 import ms from 'ms'
-import nanoid from 'nanoid'
+import { nanoid } from 'nanoid'
 import { charsets, PasswordPolicy } from 'password-sheriff'
 
 import { InvalidCredentialsError, LockedOutError, PasswordExpiredError, WeakPasswordError } from './auth-errors'
 import { AuthService, SERVER_USER } from './auth-service'
 import { saltHashPassword, validateHash } from './utils'
+import { ZXCVBNPolicy, ZXCVBNPolicyOptions } from './zxcvbn-password-policy'
 
 const debug = DEBUG('audit:users:basic')
 
@@ -31,7 +32,8 @@ export class StrategyBasic {
     router.post(
       '/login/basic/:strategy',
       this.asyncMiddleware(async (req: Request, res: Response) => {
-        const { email, password, newPassword, channel, target } = req.body
+        const { password, newPassword, channel, target } = req.body
+        const email = req.body.email.toLowerCase()
         const { strategy } = req.params
 
         // Random delay to prevent an attacker from determining if an account exists by the response time. Arbitrary numbers
@@ -98,6 +100,10 @@ export class StrategyBasic {
     const strategyOptions = _.get(await this.authService.getStrategy(strategy), 'options') as AuthStrategyBasic
 
     if (newPassword) {
+      if (password === newPassword) {
+        throw new WeakPasswordError('New password should not match old password')
+      }
+
       this._validatePassword(newPassword, strategyOptions)
       const hash = saltHashPassword(newPassword)
 
@@ -167,14 +173,8 @@ export class StrategyBasic {
       debug('login failed; user does not exist %o', { email, ipAddress })
       throw new InvalidCredentialsError()
     }
-    const strategyOptions = _.get(await this.authService.getStrategy(strategy), 'options') as AuthStrategyBasic
-    if (!validateHash(password || '', user.password!, user.salt!)) {
-      debug('login failed; wrong password %o', { email, ipAddress })
-      // this.stats.track('auth', 'login', 'fail')
 
-      await this._incrementWrongPassword(user, strategyOptions)
-      throw new InvalidCredentialsError()
-    }
+    const strategyOptions = _.get(await this.authService.getStrategy(strategy), 'options') as AuthStrategyBasic
     const { locked_out, last_login_attempt, password_expiry_date, password_expired } = user.attributes
 
     if (locked_out) {
@@ -185,6 +185,14 @@ export class StrategyBasic {
         debug('login failed; user locked out %o', { email, ipAddress })
         throw new LockedOutError()
       }
+    }
+
+    if (!validateHash(password || '', user.password!, user.salt!)) {
+      debug('login failed; wrong password %o', { email, ipAddress })
+      // this.stats.track('auth', 'login', 'fail')
+
+      await this._incrementWrongPassword(user, strategyOptions)
+      throw new InvalidCredentialsError()
     }
 
     const isDateExpired = password_expiry_date && moment().isAfter(password_expiry_date)
@@ -217,15 +225,21 @@ export class StrategyBasic {
     }
 
     if (options.requireComplexPassword) {
-      rules.containsAtLeast = {
-        atLeast: 3,
+      rules.contains = {
         expressions: [charsets.lowerCase, charsets.upperCase, charsets.numbers, charsets.specialCharacters]
       }
     }
 
     try {
-      const policyChecker = new PasswordPolicy(rules)
-      policyChecker.assert(password)
+      const basicChecker = new PasswordPolicy(rules)
+      basicChecker.assert(password)
+      if (options.requireComplexPassword) {
+        const smartChecker = new PasswordPolicy(
+          { zxcvbn: <ZXCVBNPolicyOptions>{ minScore: 2, failWhenCommonWordIsDominant: true } },
+          { zxcvbn: new ZXCVBNPolicy() }
+        )
+        smartChecker.assert(password)
+      }
     } catch (err) {
       throw new WeakPasswordError()
     }

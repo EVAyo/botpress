@@ -1,5 +1,6 @@
 import { BotConfig, BotTemplate, Logger, Stage, WorkspaceUserWithAttributes } from 'botpress/sdk'
 import cluster from 'cluster'
+import { findDeletedFiles } from 'common/fs'
 import { BotHealth, ServerHealth } from 'common/typings'
 import { BotCreationSchema, BotEditSchema, isValidBotId } from 'common/validation'
 import { createForGlobalHooks } from 'core/app/api'
@@ -9,12 +10,10 @@ import { CMSService } from 'core/cms'
 import { ConfigProvider } from 'core/config'
 import { JobService, makeRedisKey } from 'core/distributed'
 import { MessagingService } from 'core/messaging'
-import { MigrationService } from 'core/migration'
 import { extractArchive } from 'core/misc/archive'
 import { listDir } from 'core/misc/list-dir'
 import { stringify } from 'core/misc/utils'
 import { ModuleResourceLoader, ModuleLoader } from 'core/modules'
-import { RealtimeService, RealTimePayload } from 'core/realtime'
 import { InvalidOperationError } from 'core/routers'
 import { AnalyticsService } from 'core/telemetry'
 import { Hooks, HookService } from 'core/user-code'
@@ -25,14 +24,12 @@ import glob from 'glob'
 import { inject, injectable, postConstruct, tagged } from 'inversify'
 import Joi from 'joi'
 import _ from 'lodash'
-import mkdirp from 'mkdirp'
 import moment from 'moment'
 import ms from 'ms'
 import { studioActions } from 'orchestrator'
 import os from 'os'
 import path from 'path'
 import replace from 'replace-in-file'
-import semver from 'semver'
 import tmp from 'tmp'
 import { VError } from 'verror'
 
@@ -79,8 +76,6 @@ export class BotService {
     @inject(TYPES.JobService) private jobService: JobService,
     @inject(TYPES.Statistics) private stats: AnalyticsService,
     @inject(TYPES.WorkspaceService) private workspaceService: WorkspaceService,
-    @inject(TYPES.RealtimeService) private realtimeService: RealtimeService,
-    @inject(TYPES.MigrationService) private migrationService: MigrationService,
     @inject(TYPES.MessagingService) private messagingService: MessagingService
   ) {
     this._botIds = undefined
@@ -289,9 +284,24 @@ export class BotService {
         })
 
         const folder = await this._validateBotArchive(tmpDir.name)
-        await this.ghostService.forBot(botId).importFromDirectory(folder)
-        const originalConfig = await this.configProvider.getBotConfig(botId)
 
+        // Check for deleted file upon overwriting
+        if (allowOverwrite) {
+          const files = await this.ghostService.forBot(botId).directoryListing('/')
+          const deletedFiles = await findDeletedFiles(files, folder)
+
+          for (const file of deletedFiles) {
+            await this.ghostService.forBot(botId).deleteFile('/', file)
+          }
+        }
+
+        if (await this.botExists(botId)) {
+          await this.unmountBot(botId)
+        }
+
+        await this.ghostService.forBot(botId).importFromDirectory(folder)
+
+        const originalConfig = await this.configProvider.getBotConfig(botId)
         const newConfigs = <Partial<BotConfig>>{
           id: botId,
           name: botId === originalConfig.name ? originalConfig.name : `${originalConfig.name} (${botId})`,
@@ -303,10 +313,6 @@ export class BotService {
             }
           }
         }
-        if (await this.botExists(botId)) {
-          await this.unmountBot(botId)
-        }
-
         await this.configProvider.mergeBotConfig(botId, newConfigs, true)
 
         await this.workspaceService.addBotRef(botId, workspaceId)
@@ -399,18 +405,12 @@ export class BotService {
     await this._executeStageChangeHooks(botConfig, newConfig)
   }
 
-  async duplicateBot(sourceBotId: string, destBotId: string, overwriteDest: boolean = false) {
+  async duplicateBot(sourceBotId: string, destBotId: string) {
     if (!(await this.botExists(sourceBotId))) {
       throw new Error('Source bot does not exist')
     }
     if (sourceBotId === destBotId) {
       throw new Error('New bot id needs to differ from original bot')
-    }
-    if (!overwriteDest && (await this.botExists(destBotId))) {
-      this.logger
-        .forBot(destBotId)
-        .warn('Tried to duplicate a bot to existing destination id without allowing to overwrite')
-      return
     }
 
     const sourceGhost = this.ghostService.forBot(sourceBotId)
@@ -419,9 +419,9 @@ export class BotService {
     await Promise.all(
       botContent.map(async file => destGhost.upsertFile('/', file, await sourceGhost.readFileAsBuffer('/', file)))
     )
+    await studioActions.invalidateCmsForBot(destBotId)
     const workspaceId = await this.workspaceService.getBotWorkspaceId(sourceBotId)
     await this.workspaceService.addBotRef(destBotId, workspaceId)
-    await this.mountBot(destBotId)
   }
 
   public async botExists(botId: string, ignoreCache?: boolean): Promise<boolean> {
@@ -483,7 +483,10 @@ export class BotService {
     }
 
     await this.configProvider.setBotConfig(bot.id, finalBot)
-    await this.duplicateBot(bot.id, finalBot.id, true)
+    await this.duplicateBot(bot.id, finalBot.id)
+
+    await this.mountBot(finalBot.id)
+
     await this.deleteBot(bot.id)
   }
 
@@ -500,8 +503,10 @@ export class BotService {
     delete newBot.pipeline_status.stage_request
 
     try {
-      await this.duplicateBot(initialBot.id, newBot.id, true)
+      await this.duplicateBot(initialBot.id, newBot.id)
+
       await this.configProvider.setBotConfig(newBot.id, newBot)
+      await this.mountBot(newBot.id)
 
       delete initialBot.pipeline_status.stage_request
       return this.configProvider.setBotConfig(initialBot.id, initialBot)
@@ -543,7 +548,7 @@ export class BotService {
       const scopedGhost = this.ghostService.forBot(botConfig.id)
       const files = this._loadBotTemplateFiles(templatePath)
       if (fse.existsSync(templateConfigPath)) {
-        const templateConfig = JSON.parse(await fse.readFileSync(templateConfigPath, 'utf-8'))
+        const templateConfig = JSON.parse(await fse.readFile(templateConfigPath, 'utf-8'))
         const mergedConfigs = {
           ...DEFAULT_BOT_CONFIGS,
           ...templateConfig,
@@ -562,7 +567,7 @@ export class BotService {
 
         await scopedGhost.ensureDirs('/', BOT_DIRECTORIES)
         await scopedGhost.upsertFile('/', BOT_CONFIG_FILENAME, stringify(mergedConfigs))
-        await scopedGhost.upsertFiles('/', files)
+        await scopedGhost.upsertFiles('/', files, { ignoreLock: true })
 
         return mergedConfigs
       } else {
@@ -627,9 +632,6 @@ export class BotService {
   // Do not use directly use the public version instead due to broadcasting
   private async _localMount(botId: string): Promise<boolean> {
     const startTime = Date.now()
-    if (this.isBotMounted(botId)) {
-      return true
-    }
 
     if (!(await this.ghostService.forBot(botId).fileExists('/', 'bot.config.json'))) {
       this.logger
@@ -644,7 +646,16 @@ export class BotService {
         throw new Error('Supported languages must include the default language of the bot')
       }
 
-      await this.messagingService.loadMessagingForBot(botId)
+      const botpressConfig = await this.configProvider.getBotpressConfig()
+      if (ms(botpressConfig.dialog.sessionTimeoutInterval) < ms(config.dialog?.timeoutInterval || '0s')) {
+        this.logger
+          .forBot(botId)
+          .warn(
+            `[${botId}] Your timeout interval (source: bot.config) is greater than your session timeout (source: botpress.config). This will prevent 'before_session_timeout' hooks and Timeout flows from being executed.`
+          )
+      }
+
+      await this.messagingService.lifetime.loadMessagingForBot(botId)
       await this.cms.loadElementsForBot(botId)
       await this.moduleLoader.loadModulesForBot(botId)
 
@@ -683,7 +694,7 @@ export class BotService {
 
     await this.cms.clearElementsFromCache(botId)
     await this.moduleLoader.unloadModulesForBot(botId)
-    await this.messagingService.unloadMessagingForBot(botId)
+    await this.messagingService.lifetime.unloadMessagingForBot(botId)
 
     const api = await createForGlobalHooks()
     await this.hookService.executeHook(new Hooks.AfterBotUnmount(api, botId))
@@ -811,19 +822,27 @@ export class BotService {
     }
   }
 
-  public async getBotHealth(): Promise<ServerHealth[]> {
+  public async getBotHealth(workspaceId: string): Promise<ServerHealth[]> {
+    const botIdsFilter = await this.workspaceService.getBotRefs(workspaceId)
+    let serverHealth: ServerHealth[]
+
     const redis = this.jobService.getRedisClient()
-    if (!redis) {
-      return [{ serverId: process.SERVER_ID, hostname: os.hostname(), bots: BotService._botHealth }]
+    if (redis) {
+      const serverIds = await redis.keys(getBotStatusKey('*'))
+      if (!serverIds.length) {
+        return []
+      }
+
+      const servers = await redis.mget(...serverIds)
+      serverHealth = await Promise.mapSeries(servers, data => JSON.parse(data as string))
+    } else {
+      serverHealth = [{ serverId: process.SERVER_ID, hostname: os.hostname(), bots: BotService._botHealth }]
     }
 
-    const serverIds = await redis.keys(getBotStatusKey('*'))
-    if (!serverIds.length) {
-      return []
-    }
-
-    const servers = await redis.mget(...serverIds)
-    return Promise.mapSeries(servers, data => JSON.parse(data as string))
+    serverHealth.forEach(health => {
+      health.bots = _.pick(health.bots, botIdsFilter)
+    })
+    return serverHealth
   }
 
   public static incrementBotStats(botId: string, type: 'error' | 'warning' | 'critical') {

@@ -1,6 +1,14 @@
 import { Logger, StrategyUser } from 'botpress/sdk'
 import { JWT_COOKIE_NAME } from 'common/auth'
-import { AuthPayload, AuthStrategyConfig, ChatUserAuth, TokenUser, TokenResponse } from 'common/typings'
+import {
+  AuthPayload,
+  AuthStrategyConfig,
+  ChatUserAuth,
+  TokenUser,
+  TokenResponse,
+  RequestWithUser,
+  LogoutCallback
+} from 'common/typings'
 import { TYPES } from 'core/app/types'
 import { AuthStrategy, ConfigProvider } from 'core/config'
 import Database from 'core/database'
@@ -28,7 +36,7 @@ export const EXTERNAL_AUTH_HEADER = 'x-bp-externalauth'
 export const SERVER_USER = 'server::modules'
 const DEFAULT_CHAT_USER_AUTH_DURATION = '24h'
 
-const getUserKey = (email, strategy) => `${email}_${strategy}`
+const getUserKey = (email: string, strategy: string) => `${email}_${strategy}`
 
 @injectable()
 export class AuthService {
@@ -36,6 +44,7 @@ export class AuthService {
   private tokenVersions: Dic<number> = {}
   private broadcastTokenChange: Function = this.local__tokenVersionChange
   public jobService!: JobService
+  private logoutCallbacks: { [strategy: string]: LogoutCallback } = {}
 
   constructor(
     @inject(TYPES.Logger)
@@ -154,12 +163,13 @@ export class AuthService {
       tokenVersion: 1,
       attributes: { ...(user.attributes || {}), created_at: new Date() }
     })
+    const strategyUser = createdUser.result
 
     if (_.get(await this.getStrategy(strategy), 'type') === 'basic') {
       return this.strategyBasic.resetPassword(user.email, strategy)
     }
 
-    return createdUser.result
+    return strategyUser
   }
 
   async resetPassword(email: string, strategy: string): Promise<string> {
@@ -289,15 +299,27 @@ export class AuthService {
   }
 
   private async _getChatAuthExpiry(channel: string, botId: string): Promise<Date | undefined> {
+    let authDuration: string | undefined
+
     try {
-      const config = await this.moduleLoader.configReader.getForBot(`channel-${channel}`, botId)
-      const authDuration = ms(_.get(config, 'chatUserAuthDuration', DEFAULT_CHAT_USER_AUTH_DURATION))
-      return moment()
-        .add(authDuration)
-        .toDate()
+      const config = await this.configProvider.getBotConfig(botId)
+      const channelConfig = config.messaging?.channels?.[channel]
+
+      if (channelConfig) {
+        authDuration = channelConfig.chatUserAuthDuration
+      } else {
+        const config = await this.moduleLoader.configReader.getForBot(`channel-${channel}`, botId)
+        authDuration = config?.chatUserAuthDuration
+      }
     } catch (err) {
-      this.logger.attachError(err).error(`Could not get auth duration for channel ${channel} and bot ${botId}`)
+      this.logger
+        .attachError(err)
+        .error(`Could not get auth duration for channel ${channel} and bot ${botId}. Using default value`)
     }
+
+    return moment()
+      .add(ms(authDuration ?? DEFAULT_CHAT_USER_AUTH_DURATION))
+      .toDate()
   }
 
   public async authChatUser(chatUserAuth: ChatUserAuth, identity: TokenUser): Promise<void> {
@@ -355,6 +377,20 @@ export class AuthService {
 
     res.cookie(JWT_COOKIE_NAME, token.jwt, { maxAge: token.exp, httpOnly: true, ...cookieOptions })
     return true
+  }
+
+  public addLogoutCallback(strategy: string, callback: LogoutCallback) {
+    this.logoutCallbacks[strategy] = callback
+  }
+
+  public async logout(strategy: string, req: RequestWithUser, res: Response) {
+    const callback = this.logoutCallbacks[strategy]
+
+    if (!callback) {
+      return res.sendStatus(200)
+    }
+
+    return callback(strategy, req, res)
   }
 }
 

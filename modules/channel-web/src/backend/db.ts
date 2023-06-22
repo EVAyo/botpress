@@ -1,4 +1,3 @@
-import { MessagingClient } from '@botpress/messaging-client'
 import * as sdk from 'botpress/sdk'
 import _ from 'lodash'
 import LRUCache from 'lru-cache'
@@ -6,18 +5,14 @@ import ms from 'ms'
 
 export default class WebchatDb {
   private knex: sdk.KnexExtended
-  private users: typeof sdk.users
   private cacheByVisitor: LRUCache<string, UserMapping>
   private cacheByUser: LRUCache<string, UserMapping>
-  private messagingClients: { [botId: string]: MessagingClient } = {}
 
   constructor(private bp: typeof sdk) {
-    this.users = bp.users
     this.knex = bp.database
     this.cacheByVisitor = new LRUCache({ max: 10000, maxAge: ms('5min') })
     this.cacheByUser = new LRUCache({ max: 10000, maxAge: ms('5min') })
   }
-
   async initialize() {
     await this.knex.createTableIfNotExists('web_user_map', table => {
       table.string('botId')
@@ -27,16 +22,30 @@ export default class WebchatDb {
     })
   }
 
-  async mapVisitor(botId: string, visitorId: string, messaging: MessagingClient) {
-    const userMapping = await this.getMappingFromVisitor(botId, visitorId)
+  //===================================
+  // This section was copied in the
+  // HITLNext module. Please make sure
+  // to add your changes there too.
+  //===================================
 
-    let userId: string
+  async mapVisitor(botId: string, visitorId: string) {
+    const userMapping = await this.getMappingFromVisitor(botId, visitorId)
+    let userId = userMapping?.userId
+
+    const createUserAndMapping = async () => {
+      userId = (await this.bp.messaging.forBot(botId).createUser()).id
+      await this.createUserMapping(botId, visitorId, userId)
+    }
 
     if (!userMapping) {
-      userId = (await messaging.users.create()).id
-      await this.createUserMapping(botId, visitorId, userId)
+      await createUserAndMapping()
     } else {
-      userId = userMapping.userId
+      // Prevents issues when switching between different Messaging servers
+      // TODO: Remove this check once the 'web_user_map' table is removed
+      if (!(await this.checkUserExist(botId, userMapping.userId))) {
+        await this.deleteMappingFromVisitor(botId, visitorId)
+        await createUserAndMapping()
+      }
     }
 
     return userId
@@ -60,6 +69,18 @@ export default class WebchatDb {
       this.bp.logger.error('An error occurred while fetching a visitor mapping.', err)
 
       return undefined
+    }
+  }
+
+  async deleteMappingFromVisitor(botId: string, visitorId: string): Promise<void> {
+    try {
+      this.cacheByVisitor.del(`${botId}_${visitorId}`)
+      await this.bp
+        .database('web_user_map')
+        .where({ botId, visitorId })
+        .delete()
+    } catch (err) {
+      this.bp.logger.error('An error occurred while deleting a visitor mapping.', err)
     }
   }
 
@@ -106,29 +127,15 @@ export default class WebchatDb {
       .whereIn('events.messageId', messageIds)
   }
 
-  async getMessagingClient(botId: string) {
-    const client = this.messagingClients[botId]
-    if (client) {
-      return client
-    }
+  private async checkUserExist(botId: string, userId: string): Promise<boolean> {
+    const user = await this.bp.messaging.forBot(botId).getUser(userId)
 
-    const { messaging } = await this.bp.bots.getBotById(botId)
-
-    const botClient = new MessagingClient({
-      url: process.core_env.MESSAGING_ENDPOINT
-        ? process.core_env.MESSAGING_ENDPOINT
-        : `http://localhost:${process.MESSAGING_PORT}`,
-      password: process.INTERNAL_PASSWORD,
-      auth: { clientId: messaging.id, clientToken: messaging.token }
-    })
-    this.messagingClients[botId] = botClient
-
-    return botClient
+    return user?.id === userId
   }
 
-  removeMessagingClient(botId: string) {
-    this.messagingClients[botId] = undefined
-  }
+  //===================================
+  // End of copied section
+  //===================================
 }
 
 export interface UserMapping {

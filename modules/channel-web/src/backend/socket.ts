@@ -3,6 +3,8 @@ import _ from 'lodash'
 
 import Database from './db'
 
+const DEFAULT_TYPING_DELAY = 500
+
 export default async (bp: typeof sdk, db: Database) => {
   bp.events.registerMiddleware({
     description:
@@ -19,7 +21,7 @@ export default async (bp: typeof sdk, db: Database) => {
       return next()
     }
 
-    const messaging = await db.getMessagingClient(event.botId)
+    const messaging = bp.messaging.forBot(event.botId)
     const messageType = event.type === 'default' ? 'text' : event.type
     const userId = event.target
     const mapping = await db.getMappingFromUser(userId)
@@ -28,7 +30,15 @@ export default async (bp: typeof sdk, db: Database) => {
       return next()
     }
     const { visitorId } = mapping
-    const conversationId = event.threadId || (await messaging.conversations.getRecent(userId)).id
+    let conversationId = event.threadId
+    if (!conversationId) {
+      const convs = await messaging.listConversations(userId, 1)
+      if (convs?.length) {
+        conversationId = convs[0].id
+      } else {
+        conversationId = (await messaging.createConversation(userId)).id
+      }
+    }
 
     if (!event.payload.type) {
       event.payload.type = messageType
@@ -38,15 +48,18 @@ export default async (bp: typeof sdk, db: Database) => {
       const payload = bp.RealTimePayload.forVisitor(visitorId, 'webchat.data', event.payload)
       bp.realtime.sendPayload(payload)
     } else {
-      if (event.payload.typing !== false) {
-        const payload = bp.RealTimePayload.forVisitor(visitorId, 'webchat.typing', { timeInMs: 500, conversationId })
+      if (event.payload.typing === true || event.payload.type === 'typing') {
+        const value = (event.payload.type === 'typing' ? event.payload.value : undefined) || DEFAULT_TYPING_DELAY
+        const payload = bp.RealTimePayload.forVisitor(visitorId, 'webchat.typing', { timeInMs: value, conversationId })
         // Don't store "typing" in DB
         bp.realtime.sendPayload(payload)
       }
 
-      const message = await messaging.messages.create(conversationId, undefined, event.payload)
-      event.messageId = message.id
-      bp.realtime.sendPayload(bp.RealTimePayload.forVisitor(visitorId, 'webchat.message', message))
+      if (event.payload.type !== 'typing') {
+        const message = await messaging.createMessage(conversationId, undefined, event.payload)
+        event.messageId = message.id
+        bp.realtime.sendPayload(bp.RealTimePayload.forVisitor(visitorId, 'webchat.message', message))
+      }
     }
 
     next(undefined, false)

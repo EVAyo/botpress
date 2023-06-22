@@ -81,11 +81,22 @@ class BotsRouter extends CustomAdminRouter {
       })
     )
 
+    const assertBotInWorkspace = async (botId: string, workspaceId?: string) => {
+      const botExists = (await this.botService.getBotsIds()).includes(botId)
+      const isBotInCurrentWorkspace = (await this.workspaceService.getBotRefs(workspaceId)).includes(botId)
+
+      if (botExists && !isBotInCurrentWorkspace) {
+        throw new ConflictError(`Bot "${botId}" already exists in another workspace. Bot ID are unique server-wide`)
+      }
+    }
+
     router.post(
       '/',
       this.needPermissions('write', this.resource),
       this.asyncMiddleware(async (req, res) => {
         const bot = <BotConfig>_.pick(req.body, ['id', 'name', 'category', 'defaultLanguage'])
+
+        await assertBotInWorkspace(bot.id, req.workspace)
 
         const botExists = (await this.botService.getBotsIds()).includes(bot.id)
         const botLinked = (await this.workspaceService.getBotRefs()).includes(bot.id)
@@ -203,13 +214,17 @@ class BotsRouter extends CustomAdminRouter {
           return res.status(400).send('Bot should be imported from archive')
         }
 
+        const overwrite = yn(req.query.overwrite)
         const botId = await this.botService.makeBotId(req.params.botId, req.workspace!)
+
+        if (overwrite) {
+          await assertBotInWorkspace(botId, req.workspace)
+        }
 
         const buffers: any[] = []
         req.on('data', chunk => buffers.push(chunk))
         await Promise.fromCallback(cb => req.on('end', cb))
 
-        const overwrite = yn(req.query.overwrite)
         await this.botService.importBot(botId, Buffer.concat(buffers), req.workspace!, overwrite)
         res.sendStatus(200)
       })
@@ -262,7 +277,7 @@ class BotsRouter extends CustomAdminRouter {
       '/health',
       this.needPermissions('read', this.resource),
       this.asyncMiddleware(async (req, res) => {
-        return sendSuccess(res, 'Retrieved bot health', await this.botService.getBotHealth())
+        return sendSuccess(res, 'Retrieved bot health', await this.botService.getBotHealth(req.workspace || 'default'))
       })
     )
 

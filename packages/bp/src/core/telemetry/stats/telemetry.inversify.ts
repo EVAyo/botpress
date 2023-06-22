@@ -5,8 +5,10 @@ import { ActionsStats } from './actions-stats'
 import { ConfigsStats } from './configs-stats'
 import { HooksStats } from './hooks-stats'
 import { LegacyStats } from './legacy-stats'
+import { MessageStats } from './message-stats'
 import { RolesStats } from './roles-stats'
 import { SDKStats } from './sdk-stats'
+import { UserStats } from './user-stats'
 
 const ServicesContainerModule = new ContainerModule((bind: interfaces.Bind) => {
   bind<ActionsStats>(TYPES.ActionStats)
@@ -31,6 +33,14 @@ const ServicesContainerModule = new ContainerModule((bind: interfaces.Bind) => {
 
   bind<ConfigsStats>(TYPES.ConfigsStats)
     .to(ConfigsStats)
+    .inSingletonScope()
+
+  bind<UserStats>(TYPES.UserStats)
+    .to(UserStats)
+    .inSingletonScope()
+
+  bind<MessageStats>(TYPES.MessageStats)
+    .to(MessageStats)
     .inSingletonScope()
 })
 

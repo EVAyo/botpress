@@ -169,6 +169,7 @@ export class HTTPServer {
       jobService,
       logsRepo,
       authStrategies,
+      messagingService,
       this
     )
 
@@ -233,6 +234,9 @@ export class HTTPServer {
     await AppLifecycle.waitFor(AppLifecycleEvents.CONFIGURATION_LOADED)
     await this.setupRootPath()
 
+    const botpressConfig = await this.configProvider.getBotpressConfig()
+    process.USE_JWT_COOKIES = yn(botpressConfig.jwtToken.useCookieStorage)
+
     const app = express()
     app.use(process.ROOT_PATH, this.app)
     this.httpServer = createServer(app)
@@ -249,15 +253,17 @@ export class HTTPServer {
     const config = await this.configProvider.getBotpressConfig()
 
     return `
-    window.API_PATH = "${process.ROOT_PATH}/api/v1";
-    window.TELEMETRY_URL = "${process.TELEMETRY_URL}";
-    window.SEND_USAGE_STATS = ${config!.sendUsageStats};
-    window.USE_JWT_COOKIES = ${process.USE_JWT_COOKIES};
-    window.EXPERIMENTAL = ${config.experimental};
-    window.SOCKET_TRANSPORTS = ["${getSocketTransports(config).join('","')}"];
-    window.SHOW_POWERED_BY = ${!!config.showPoweredBy};
-    window.UUID = "${this.machineId}";
-    window.SERVER_ID = "${process.SERVER_ID}";`
+        window.API_PATH = "${process.ROOT_PATH}/api/v1";
+        window.TELEMETRY_URL = "${process.TELEMETRY_URL}";
+        window.EXTERNAL_URL = "${process.EXTERNAL_URL}";
+        window.SEND_USAGE_STATS = ${config!.sendUsageStats};
+        window.USE_JWT_COOKIES = ${process.USE_JWT_COOKIES};
+        window.EXPERIMENTAL = ${config.experimental};
+        window.SOCKET_TRANSPORTS = ${JSON.stringify(getSocketTransports(config))}
+        window.SHOW_POWERED_BY = ${!!config.showPoweredBy};
+        window.UUID = "${this.machineId}";
+        window.SERVER_ID = "${process.SERVER_ID}";
+    `
   }
 
   async setupStudioProxy() {
@@ -281,9 +287,7 @@ export class HTTPServer {
     const config = botpressConfig.httpServer
     await this.sdkApiRouter.initialize()
 
-    process.USE_JWT_COOKIES = yn(botpressConfig.jwtToken.useCookieStorage)
-
-    this.setupMessagingProxy()
+    await this.messagingService.proxy.setup(this.app, BASE_API_PATH)
 
     /**
      * The loading of language models can take some time, access to Botpress is disabled until it is completed
@@ -435,24 +439,9 @@ export class HTTPServer {
     return this.app
   }
 
-  private setupMessagingProxy() {
-    this.app.use(
-      `${BASE_API_PATH}/messaging`,
-      createProxyMiddleware({
-        pathRewrite: path => {
-          return path.replace(`${BASE_API_PATH}/messaging`, '')
-        },
-        router: () => {
-          return `http://localhost:${process.MESSAGING_PORT}`
-        },
-        changeOrigin: false,
-        logLevel: 'silent'
-      })
-    )
-  }
-
   private setupUILite(app) {
     app.get('/lite/:botId/env.js', async (req, res) => {
+      const branding = await this.configProvider.getBrandingConfig('webchat')
       const { botId } = req.params
 
       const bot = await this.botService.findBotById(botId)
@@ -464,6 +453,9 @@ export class HTTPServer {
       const totalEnv = `
           (function(window) {
               ${commonEnv}
+              window.APP_NAME = "${branding.title}";
+              window.APP_FAVICON = "${branding.favicon}";
+              window.APP_CUSTOM_CSS = "${branding.customCss}";
               window.BOT_API_PATH = "${process.ROOT_PATH}/api/v1/bots/${botId}";
             })(typeof window != 'undefined' ? window : {})
           `

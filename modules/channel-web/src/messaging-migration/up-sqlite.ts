@@ -9,6 +9,7 @@ export class MessagingSqliteUpMigrator extends MessagingUpMigrator {
   private convoBatch = []
   private convoNewIdsBatch = []
   private messageBatch = []
+  private sessionBatch: { oldId: string; newId: string }[] = []
   private userCache = new LRUCache<string, string>({ max: 10000 })
 
   protected async start() {
@@ -44,6 +45,7 @@ export class MessagingSqliteUpMigrator extends MessagingUpMigrator {
         .select('*')
         .offset(i)
         .limit(batchSize)
+        .orderBy('id')
 
       // We migrate batchSize conversations at a time
       await this.migrateConvos(convos)
@@ -58,21 +60,11 @@ export class MessagingSqliteUpMigrator extends MessagingUpMigrator {
 
       // We delete these tables in case the migration crashed halfway.
       await this.trx.schema.dropTableIfExists('web_user_map')
-      await this.trx.schema.dropTableIfExists('msg_messages')
-      await this.trx.schema.dropTableIfExists('msg_conversations')
-      await this.trx.schema.dropTableIfExists('msg_users')
-      await this.trx.schema.dropTableIfExists('msg_clients')
-      await this.trx.schema.dropTableIfExists('msg_providers')
 
       await this.trx.raw('PRAGMA foreign_keys = ON;')
     } else {
       // We delete these tables in case the migration crashed halfway.
       await this.trx.raw('DROP TABLE IF EXISTS web_user_map CASCADE')
-      await this.trx.raw('DROP TABLE IF EXISTS msg_messages CASCADE')
-      await this.trx.raw('DROP TABLE IF EXISTS msg_conversations CASCADE')
-      await this.trx.raw('DROP TABLE IF EXISTS msg_users CASCADE')
-      await this.trx.raw('DROP TABLE IF EXISTS msg_clients CASCADE')
-      await this.trx.raw('DROP TABLE IF EXISTS msg_providers CASCADE')
     }
 
     await super.createTables()
@@ -107,6 +99,16 @@ export class MessagingSqliteUpMigrator extends MessagingUpMigrator {
       this.convoBatch.push(newConvo)
       this.convoNewIdsBatch.push({ oldId: convo.id, newId: newConvo.id })
 
+      const oldSessionId = `${convo.botId}::web::${convo.userId}::${convo.id}`
+      if (
+        await this.trx('dialog_sessions')
+          .where({ id: oldSessionId })
+          .first()
+      ) {
+        const newSessionId = `${convo.botId}::web::${newConvo.userId}::${newConvo.id}`
+        this.sessionBatch.push({ oldId: oldSessionId, newId: newSessionId })
+      }
+
       const messages = await this.trx('web_messages')
         .select('*')
         .where({ conversationId: convo.id })
@@ -128,10 +130,15 @@ export class MessagingSqliteUpMigrator extends MessagingUpMigrator {
       if (this.convoBatch.length > maxBatchSize) {
         await this.emptyConvoBatch()
       }
+
+      if (this.sessionBatch.length > maxBatchSize) {
+        await this.emptySessionBatch()
+      }
     }
 
     await this.emptyConvoBatch()
     await this.emptyMessageBatch()
+    await this.emptySessionBatch()
   }
 
   private async getUserId(botId: string, visitorId: string, clientId: string) {
@@ -197,6 +204,18 @@ export class MessagingSqliteUpMigrator extends MessagingUpMigrator {
     if (this.messageBatch.length > 0) {
       await this.trx('msg_messages').insert(this.messageBatch)
       this.messageBatch = []
+    }
+  }
+
+  private async emptySessionBatch() {
+    if (this.sessionBatch.length > 0) {
+      for (const session of this.sessionBatch) {
+        await this.trx('dialog_sessions')
+          .update({ id: session.newId })
+          .where({ id: session.oldId })
+      }
+
+      this.sessionBatch = []
     }
   }
 }

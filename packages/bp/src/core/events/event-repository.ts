@@ -2,12 +2,12 @@ import * as sdk from 'botpress/sdk'
 import Database from 'core/database'
 import { TYPES } from 'core/types'
 import { inject, injectable } from 'inversify'
-import _ from 'lodash'
 
 export const DefaultSearchParams: sdk.EventSearchParams = {
   sortOrder: [{ column: 'createdOn' }],
   from: 0,
-  count: 10
+  count: 10,
+  createdOn: undefined
 }
 
 const UNLIMITED_ELEMENTS = -1
@@ -30,6 +30,15 @@ export class EventRepository {
 
     let query = this.database.knex(this.TABLE_NAME)
     query = query.where(fields)
+
+    if (params.createdOn) {
+      if (params.createdOn.after) {
+        query = query.andWhere(this.database.knex.date.isAfterOrOn('createdOn', params.createdOn.after))
+      }
+      if (params.createdOn.before) {
+        query = query.andWhere(this.database.knex.date.isBeforeOrOn('createdOn', params.createdOn.before))
+      }
+    }
 
     sortOrder &&
       sortOrder.forEach(sort => {
@@ -73,12 +82,22 @@ export class EventRepository {
       return false
     }
 
-    const event = events[0]
-    await this.updateEvent(event.id!, { feedback })
+    const storedEvent = events[0]
+    const incomingEvent = storedEvent.event as sdk.IO.IncomingEvent
+
+    await this.updateEvent(storedEvent.id, { feedback })
 
     if (type) {
+      const details = incomingEvent.decision?.sourceDetails
       const metric = feedback === 1 ? 'bp_core_feedback_positive' : 'bp_core_feedback_negative'
-      BOTPRESS_CORE_EVENT(metric, { botId: event.botId, channel: event.channel, type, eventId: event.id })
+
+      BOTPRESS_CORE_EVENT(metric, {
+        botId: storedEvent.botId,
+        channel: storedEvent.channel,
+        type,
+        eventId: storedEvent.id,
+        details
+      })
     }
 
     return true

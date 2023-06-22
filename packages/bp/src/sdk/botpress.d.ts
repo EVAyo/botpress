@@ -98,7 +98,7 @@ declare module 'botpress/sdk' {
 
   export interface Logger {
     forBot(botId: string): this
-    attachError(error: Error): this
+    attachError(error: unknown): this
     /**
      * Attaching an event to the log entry will display the associated logs in the Processing tab on the debugger
      */
@@ -443,7 +443,7 @@ declare module 'botpress/sdk' {
   }
 
   export namespace IO {
-    export type EventDirection = 'incoming' | 'outgoing'
+    export type EventDirection = 'incoming' | 'outgoing' | 'internal'
     export namespace WellKnownFlags {
       /** When this flag is active, the dialog engine will ignore those events */
       export const SKIP_DIALOG_ENGINE: symbol
@@ -541,6 +541,7 @@ declare module 'botpress/sdk' {
 
     export interface EventUnderstanding {
       readonly errored: boolean
+      readonly modelId: string | undefined
 
       readonly predictions?: {
         [context: string]: {
@@ -584,6 +585,12 @@ declare module 'botpress/sdk' {
       /* HITL module has possibility to pause conversation */
       readonly isPause?: boolean
       readonly ndu?: NDU.DialogUnderstanding
+    }
+
+    export interface InternalEvent extends Event {
+      direction: 'internal'
+      /** Contains data related to the state of the event */
+      state: EventState
     }
 
     export interface OutgoingEvent extends Event {
@@ -805,7 +812,7 @@ declare module 'botpress/sdk' {
    * An outgoing event will register itself into the outgoing middleware chain.
    * @see MiddlewareDefinition to learn more about middleware.
    */
-  export type EventDirection = 'incoming' | 'outgoing'
+  export type EventDirection = 'incoming' | 'outgoing' | 'internal'
 
   export interface UpsertOptions {
     /** Whether or not to record a revision @default true */
@@ -1008,14 +1015,6 @@ declare module 'botpress/sdk' {
 
   export interface MessagingConfig {
     /**
-     * Client id used to identify the bot on the messaging server
-     */
-    id: string
-    /**
-     * Client token used to authenticate requests made to the messaging server
-     */
-    token: string
-    /**
      * Configurations of channels to be sent to the messaging server
      * You can find more about channel configurations here : https://botpress.com/docs/channels/faq
      */
@@ -1206,6 +1205,8 @@ declare module 'botpress/sdk' {
     flow: SkillFlow
     /** An array of possible transitions for the parent node */
     transitions: NodeTransition[]
+    /** Elements to be previewed in the skill node */
+    previewElements?: string[] | null
   }
 
   /**
@@ -1257,14 +1258,20 @@ declare module 'botpress/sdk' {
    * - END - End the current dialog
    * - node - Send the user to a specific node in the current flow
    */
-  export interface NodeTransition {
+
+   export type language =
+   'en' | 'de' | 'pt' | 'ar' | 'nl' | 'fr' | 'he' | 'it' | 'ja' | 'pl' | 'ru' | 'es'
+
+  type MultiLangCaption = { [key in language as `caption$${key}`]?: string; }
+
+  export type NodeTransition = {
     /** The text to display instead of the condition in the flow editor */
     caption?: string
     /** A JS expression that is evaluated to determine if it should send the user to the specified node */
     condition: string
     /** The destination node */
     node: string
-  }
+  } & MultiLangCaption
 
   export interface MultiLangText {
     [lang: string]: string
@@ -1565,6 +1572,7 @@ declare module 'botpress/sdk' {
     subtitle?: string | MultiLangText
     image?: string
     actions: ActionButton[]
+    markdown?: boolean
   }
 
   export interface LocationContent extends Content {
@@ -1702,6 +1710,7 @@ declare module 'botpress/sdk' {
     count?: number
     /** An array of columns with direction to sort results */
     sortOrder?: SortOrder[]
+    createdOn?: { after?: Date; before?: Date }
   }
 
   export interface Filter {
@@ -1735,6 +1744,145 @@ declare module 'botpress/sdk' {
   export interface FileContent {
     name: string
     content: string | Buffer
+  }
+
+  export type uuid = string
+
+  export interface Conversation {
+    id: uuid
+    clientId: uuid
+    userId: uuid
+    createdOn: Date
+  }
+
+  export interface MessagingUser {
+    id: uuid
+    clientId: uuid
+  }
+
+  export interface Message {
+    id: uuid
+    conversationId: uuid
+    authorId: uuid | undefined
+    sentOn: Date
+    payload: any
+  }
+
+  export interface Endpoint {
+    channel:
+      | {
+          name: string
+          version: string
+        }
+      | string
+    identity: string
+    sender: string
+    thread: string
+  }
+
+  export interface MessagingClient {
+    /** Client id configured for this instance */
+    readonly clientId: uuid
+
+    /** Client token of to authenticate requests made with the client id */
+    readonly clientToken: string | undefined
+
+    /** Webhook token to validate webhook events that are received */
+    readonly webhookToken: string | undefined
+
+    /**
+     * Creates a new messaging user
+     * @returns info of the newly created user
+     */
+    createUser(): Promise<MessagingUser>
+
+    /**
+     * Fetches a messaging user
+     * @param id id of the user to fetch
+     * @returns info of the user or `undefined` if not found
+     */
+    getUser(id: uuid): Promise<MessagingUser | undefined>
+
+    /**
+     * Creates a new messaging conversation
+     * @param userId id of the user that starts this conversation
+     * @returns info of the newly created conversation
+     */
+    createConversation(userId: uuid): Promise<Conversation>
+    /**
+     * Fetches a messaging conversation
+     * @param id id of the conversation to fetch
+     * @returns info of the conversation or `undefined` if not found
+     */
+    getConversation(id: uuid): Promise<Conversation | undefined>
+
+    /**
+     * Lists the conversations that a user participates in
+     * @param userId id of the user that participates in the conversations
+     * @param limit max amount of conversations to list (default 20)
+     * @returns an array of conversations
+     */
+    listConversations(userId: uuid, limit?: number): Promise<Conversation[]>
+
+    /**
+     * Sends a message to the messaging server
+     * @param conversationId id of the conversation to post the message to
+     * @param authorId id of the message autor. `undefined` if bot
+     * @param payload content of the message
+     * @param flags message flags
+     * @returns info of the created message
+     */
+    createMessage(
+      conversationId: uuid,
+      authorId: uuid | undefined,
+      payload: any,
+      flags?: {
+        incomingId: uuid
+      }
+    ): Promise<Message>
+    /**
+     * Fetches a message
+     * @param id id of the message to fetch
+     * @returns info of the message or `undefined` if not found
+     */
+    getMessage(id: uuid): Promise<Message | undefined>
+
+    /**
+     * Lists the messages of a conversation
+     * @param conversationId id of the conversation that owns the messages
+     * @param limit max amount of messages to list (default 20)
+     * @returns an array of conversations
+     */
+    listMessages(conversationId: uuid, limit?: number): Promise<Message[]>
+
+    /**
+     * Deletes a message
+     * @param id id of the message to delete
+     * @returns `true` if a message was deleted
+     */
+    deleteMessage(id: uuid): Promise<boolean>
+
+    /**
+     * Deletes all messages of a conversation
+     * @param conversationId id of the conversation that owns the messages
+     * @returns amount of messages deleted
+     */
+    deleteMessagesByConversation(conversationId: uuid): Promise<number>
+
+    /**
+     * Maps an endpoint to a conversation id. Calling this function with the
+     * same endpoint always returns the same conversation id
+     * @param endpoint endpoint to be mapped
+     * @returns a conversation id associated to the endpoint
+     */
+    mapEndpoint(endpoint: Endpoint): Promise<uuid>
+
+    /**
+     * Lists the endpoints associated to a conversation
+     * @param conversationId id of the conversation that is associated with the endpoints
+     * @returns an array of endpoints that are linked to the provided conversation
+     */
+    listEndpoints(conversationId: uuid): Promise<Endpoint[]>
   }
 
   export namespace http {
@@ -1834,7 +1982,11 @@ declare module 'botpress/sdk' {
      * @param eventDestination - The destination to identify the target
      * @param payloads - One or multiple payloads to send
      */
-    export function replyToEvent(eventDestination: IO.EventDestination, payloads: any[], incomingEventId?: string): void
+    export function replyToEvent(
+      eventDestination: IO.EventDestination,
+      payloads: any[],
+      incomingEventId?: string
+    ): Promise<void>
 
     /**
      * Return the state of the incoming queue. True if there are any events(messages)
@@ -2253,6 +2405,10 @@ declare module 'botpress/sdk' {
      * @param context Variables to use for the template rendering
      */
     export function renderTemplate(item: TemplateItem, context): TemplateItem
+  }
+
+  export namespace messaging {
+    export function forBot(botId: string): MessagingClient
   }
 
   /**

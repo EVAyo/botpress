@@ -10,6 +10,7 @@ import { ConfigProvider } from 'core/config/config-loader'
 import { JobService } from 'core/distributed'
 import { AlertingService, MonitoringService } from 'core/health'
 import { LogsRepository } from 'core/logger'
+import { MessagingService } from 'core/messaging'
 import { ModuleLoader } from 'core/modules'
 import { sendSuccess } from 'core/routers'
 import { CustomRouter } from 'core/routers/customRouter'
@@ -40,6 +41,7 @@ export interface AdminServices {
   alertingService: AlertingService
   jobService: JobService
   authStrategies: AuthStrategies
+  messagingService: MessagingService
 }
 
 class AdminRouter extends CustomRouter {
@@ -64,6 +66,7 @@ class AdminRouter extends CustomRouter {
     jobService: JobService,
     logsRepository: LogsRepository,
     authStrategies: AuthStrategies,
+    messagingService: MessagingService,
     private httpServer: HTTPServer
   ) {
     super('Admin', logger, Router({ mergeParams: true }))
@@ -82,7 +85,8 @@ class AdminRouter extends CustomRouter {
       logsRepository,
       alertingService,
       jobService,
-      authStrategies
+      authStrategies,
+      messagingService
     }
 
     this.managementRouter = new ManagementRouter(adminServices)
@@ -105,6 +109,10 @@ class AdminRouter extends CustomRouter {
       const branding = await this.configProvider.getBrandingConfig('admin')
       const commonEnv = await this.httpServer.getCommonEnv()
 
+      const segmentWriteKey = process.core_env.BP_DEBUG_SEGMENT
+        ? 'P8pyBfskchwmKDFFi0MUIZgws85DUbDV' // Dev key from Segment
+        : 'zE0mct7hGOZRtCyImjX9vT1NJ2TpfyGF' // Prod key from Segment
+
       res.contentType('text/javascript')
       res.send(`
       (function(window) {
@@ -113,6 +121,7 @@ class AdminRouter extends CustomRouter {
           window.APP_NAME = "${branding.title}";
           window.APP_FAVICON = "${branding.favicon}";
           window.APP_CUSTOM_CSS = "${branding.customCss}";
+          window.SEGMENT_WRITE_KEY = "${segmentWriteKey}";
         })(typeof window != 'undefined' ? window : {})
       `)
     })

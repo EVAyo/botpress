@@ -4,7 +4,7 @@ import { AxiosInstance } from 'axios'
 import { StoredToken, TokenUser, TokenResponse } from 'common/typings'
 import moment from 'moment'
 import ms from 'ms'
-import nanoid from 'nanoid'
+import { nanoid } from 'nanoid'
 import storage from '../utils/storage'
 
 export const TOKEN_KEY = 'bp/token'
@@ -12,10 +12,9 @@ export const TOKEN_KEY = 'bp/token'
 const MIN_MS_LEFT_BEFORE_REFRESH = ms('5m')
 
 export const getToken = (onlyToken: boolean = true): StoredToken | string | undefined => {
-  const token = storage.get(TOKEN_KEY)
-  const parsed = token && JSON.parse(token)
+  const parsedToken = storage.get<StoredToken>(TOKEN_KEY)
 
-  return onlyToken ? parsed && parsed.token : parsed
+  return onlyToken ? parsedToken && parsedToken.token : parsedToken
 }
 
 export const setToken = (token: Partial<TokenResponse>): void => {
@@ -29,7 +28,7 @@ export const setToken = (token: Partial<TokenResponse>): void => {
     storedToken = { token: token.jwt, expiresAt: tokenUser.exp, issuedAt: tokenUser.iat! }
   }
 
-  storage.set(TOKEN_KEY, JSON.stringify(storedToken))
+  storage.set(TOKEN_KEY, storedToken)
 }
 
 export const isTokenValid = (): boolean => {
@@ -51,14 +50,24 @@ export const tokenNeedsRefresh = () => {
 }
 
 export const logout = async (getAxiosClient: () => AxiosInstance) => {
-  await getAxiosClient()
-    .post('/admin/auth/logout')
-    .catch(() => {})
+  let url = ''
+  try {
+    const resp = await getAxiosClient().get('/admin/auth/logout')
 
-  // Clear access token and ID token from local storage
-  localStorage.removeItem(TOKEN_KEY)
-  // need to force reload otherwise the token wont clear properly
-  window.location.href = window.location.origin + window['ROOT_PATH']
+    url = resp.data.url
+  } catch {
+    // Silently fails
+  } finally {
+    storage.del(TOKEN_KEY)
+
+    if (url) {
+      // If /logout gave us a URL, manually redirect to this URL
+      window.location.replace(url)
+    } else {
+      // need to force reload otherwise the token wont clear properly
+      window.location.href = window.location.origin + window['ROOT_PATH']
+    }
+  }
 }
 
 export const setVisitorId = (userId: string, userIdScope?: string) => {

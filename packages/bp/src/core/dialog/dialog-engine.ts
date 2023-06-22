@@ -9,7 +9,7 @@ import { Hooks, HookService } from 'core/user-code'
 import { inject, injectable, tagged } from 'inversify'
 import _ from 'lodash'
 
-import { FlowError, TimeoutNodeNotFound } from './errors'
+import { FlowError, InfiniteLoopError, TimeoutNodeNotFound } from './errors'
 import { Instruction } from './instruction'
 import { InstructionProcessor } from './instruction/processor'
 import { InstructionQueue } from './instruction/queue'
@@ -109,22 +109,38 @@ export class DialogEngine {
         // This way the queue will be rebuilt from the next node.
         context.queue = undefined
 
-        return this._transition(sessionId, event, destination).catch(err => {
-          addErrorToEvent(
-            {
-              type: 'dialog-transition',
-              stacktrace: err.stacktrace || err.stack,
-              destination
-            },
-            event
-          )
+        try {
+          const incommingEvent = await this._transition(sessionId, event, destination)
+          return incommingEvent
+        } catch (err) {
+          {
+            addErrorToEvent(
+              {
+                type: 'dialog-transition',
+                stacktrace: err.stacktrace || err.stack,
+                destination
+              },
+              event
+            )
 
-          const { onErrorFlowTo } = event.state.temp
-          const errorFlow =
-            typeof onErrorFlowTo === 'string' && onErrorFlowTo.length ? onErrorFlowTo : 'error.flow.json'
+            if (err instanceof InfiniteLoopError) {
+              /**
+               * In that case we don't even want to transition to error handling flow
+               * as risk of another infinite loop is too high.
+               * This is major problem and can't be handled softly.
+               */
+              this.cleanState(event)
+              throw err
+            }
 
-          return this._transition(sessionId, event, errorFlow)
-        })
+            const { onErrorFlowTo } = event.state.temp
+            const errorFlow =
+              typeof onErrorFlowTo === 'string' && onErrorFlowTo.length ? onErrorFlowTo : 'error.flow.json'
+
+            const incommingEvent = await this._transition(sessionId, event, errorFlow)
+            return incommingEvent
+          }
+        }
       }
     } catch (err) {
       this._reportProcessingError(botId, err, event, instruction)
@@ -237,7 +253,7 @@ export class DialogEngine {
       nextFlow,
       nextNode
     }: {
-      currentFlow: FlowWithParent
+      currentFlow?: FlowWithParent
       currentNode?: FlowNode
       nextFlow: FlowWithParent
       nextNode: FlowNode
@@ -248,13 +264,16 @@ export class DialogEngine {
       currentNode: nextNode.name,
       currentFlow: nextFlow.name,
       queue: undefined,
-      previousFlow: currentFlow.name,
+      previousFlow: currentFlow?.name ?? '',
       previousNode: currentNode?.name ?? '',
-      hasJumped: true,
-      jumpPoints: [
+      hasJumped: true
+    }
+
+    if (currentFlow) {
+      event.state.context.jumpPoints = [
         ...(event.state.context?.jumpPoints || []),
         {
-          flow: currentFlow.name,
+          flow: currentFlow?.name,
           node: currentNode?.name as string
         }
       ]
@@ -269,7 +288,7 @@ export class DialogEngine {
 
     await this._loadFlows(botId)
 
-    const currentFlow = this._findFlow(botId, event.state.context?.currentFlow!)
+    const currentFlow = this.findFlowWithoutError(botId, event.state.context?.currentFlow)
     const currentNode = this.findNodeWithoutError(botId, currentFlow, event.state.context?.currentNode)
 
     // Check for a timeout property in the current node
@@ -279,6 +298,11 @@ export class DialogEngine {
     // Check for a timeout node in the current flow
     if (!timeoutNode) {
       timeoutNode = this.findNodeWithoutError(botId, currentFlow, 'timeout')
+      if (!timeoutNode && currentFlow?.name.startsWith('skills/') && event.state.context?.previousFlow) {
+        const previousFlow = this.findFlowWithoutError(botId, event.state.context?.previousFlow)
+        timeoutNode = this.findNodeWithoutError(botId, previousFlow, 'timeout')
+        timeoutFlow = previousFlow
+      }
     }
 
     // Check for a timeout property in the current flow
@@ -298,12 +322,15 @@ export class DialogEngine {
       }
     }
 
-    if (!timeoutNode || !timeoutFlow) {
-      throw new TimeoutNodeNotFound(`Could not find any timeout node or flow for session "${sessionId}"`)
+    if (timeoutNode && timeoutFlow) {
+      // There is a timeout node and flow, we jump to it
+      this.fillContextForTransition(event, { currentFlow, currentNode, nextFlow: timeoutFlow, nextNode: timeoutNode })
+    } else if (!event.state.context?.hasJumped) {
+      // If there was no jump, we just return the event to have it's state changes persisted
+      return event
     }
 
-    this.fillContextForTransition(event, { currentFlow, currentNode, nextFlow: timeoutFlow, nextNode: timeoutNode })
-
+    // Process the event with the new context, return to persist state changes
     return this.processEvent(sessionId, event)
   }
 
@@ -313,7 +340,7 @@ export class DialogEngine {
   }
 
   public shouldRunConvEnd(event: IO.IncomingEvent): boolean {
-    const { name } = this._findFlow(event.botId, event.state.context?.currentFlow!)
+    const { name } = this._findFlow(event.botId, event.state.context?.currentFlow)
 
     if (name === 'timeout.flow.json') {
       this.cleanState(event)
@@ -342,7 +369,7 @@ export class DialogEngine {
     this._debug(event.botId, event.target, 'processing conversation end flow')
     const { botId, threadId } = event
 
-    const currentFlow = this._findFlow(botId, event.state.context?.currentFlow!)
+    const currentFlow = this._findFlow(botId, event.state.context?.currentFlow)
     const currentNode = this.findNodeWithoutError(botId, currentFlow, event.state.context?.currentNode)
     const conversationEndFlow = this.findFlowWithoutError(botId, 'conversation_end.flow.json')
 
@@ -395,9 +422,7 @@ export class DialogEngine {
 
   protected async _transition(sessionId: string, event: IO.IncomingEvent, transitionTo: string) {
     let context: IO.DialogContext = event.state.context || {}
-    if (!event.activeProcessing?.errors?.length) {
-      this._detectInfiniteLoop(event.state.__stacktrace, event.botId)
-    }
+    this.detectInfiniteLoop(event.state.__stacktrace, event.botId)
 
     context.jumpPoints = context.jumpPoints?.filter(x => !x.used)
 
@@ -539,7 +564,7 @@ export class DialogEngine {
     this._flowsByBot.set(botId, flows)
   }
 
-  private _detectInfiniteLoop(stacktrace: IO.JumpPoint[], botId: string) {
+  public detectInfiniteLoop(stacktrace: IO.JumpPoint[], botId: string) {
     // find the first node that gets repeated at least 3 times
     const loop = _.chain(stacktrace)
       .groupBy(x => `${x.flow}|${x.node}`)
@@ -564,18 +589,18 @@ export class DialogEngine {
       }
     }
 
-    throw new FlowError(`Infinite loop detected. (${recurringPath.join(' --> ')})`, botId, loop[0].flow, loop[0].node)
+    throw new InfiniteLoopError(recurringPath, botId, loop[0].flow, loop[0].node)
   }
 
-  private _findFlow(botId: string, flowName: string) {
+  private _findFlow(botId: string, flowName?: string) {
     const flows = this._flowsByBot.get(botId)
-    if (!flows) {
+    if (!flows || !flowName) {
       throw new FlowError('Could not find any flow.', botId, flowName)
     }
 
-    flowName = flowName.endsWith('.flow.json') ? flowName : `${flowName.toLowerCase()}.flow.json`
+    const fileName = flowName.endsWith('.flow.json') ? flowName : `${flowName}.flow.json`
 
-    const flow = flows.find(x => x.name === flowName)
+    const flow = flows.find(x => x.name.toLowerCase() === fileName.toLowerCase())
     if (!flow) {
       throw new FlowError(`Flow not found: ${flowName}`, botId, flowName)
     }

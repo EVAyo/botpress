@@ -1,6 +1,5 @@
 import * as sdk from 'botpress/sdk'
 import lang from 'common/lang'
-import { makeNLUPassword } from 'common/nlu-token'
 import { createForGlobalHooks } from 'core/app/api'
 import { BotService, BotMonitoringService } from 'core/bots'
 import { GhostService } from 'core/bpfs'
@@ -30,7 +29,7 @@ import { AppLifecycle, AppLifecycleEvents } from 'lifecycle'
 import _ from 'lodash'
 import moment from 'moment'
 import ms from 'ms'
-import nanoid from 'nanoid'
+import { nanoid } from 'nanoid'
 import { startLocalActionServer, startLocalNLUServer } from 'orchestrator'
 import { startLocalMessagingServer } from 'orchestrator/messaging-server'
 import path from 'path'
@@ -203,6 +202,7 @@ export class Botpress {
       } else {
         const { endpoint } = config.nluServer
         this.logger.info(`NLU server manually handled at: ${endpoint}`)
+        process.NLU_ENDPOINT = endpoint
       }
 
       return
@@ -226,7 +226,6 @@ export class Botpress {
       dbURL: process.core_env.BPFS_STORAGE === 'database' ? process.core_env.DATABASE_URL : undefined,
       modelDir: process.cwd(),
       modelCacheSize: config.modelCacheSize,
-      authToken: makeNLUPassword(),
       logFilter,
       verbose
     })
@@ -240,7 +239,8 @@ export class Botpress {
 
     startLocalMessagingServer({
       CORE_PORT: process.PORT.toString(),
-      EXTERNAL_URL: process.EXTERNAL_URL
+      EXTERNAL_URL: process.EXTERNAL_URL,
+      ROOT_PATH: process.ROOT_PATH
     })
   }
 
@@ -395,7 +395,7 @@ export class Botpress {
     await this.workspaceService.initialize()
     await this.cmsService.initialize()
     await this.eventCollector.initialize(this.database)
-    await this.qnaService.initialize()
+    this.qnaService.initialize()
 
     this.eventEngine.onBeforeIncomingMiddleware = async (event: sdk.IO.IncomingEvent) => {
       await this.stateManager.restore(event)
@@ -434,6 +434,7 @@ export class Botpress {
         this.eventCollector.storeEvent(event)
       }
 
+      this.messagingService.collector.informProcessingDone(event)
       await converseApiEvents.emitAsync(`done.${buildUserKey(event.botId, event.target)}`, event)
     }
 
@@ -441,9 +442,6 @@ export class Botpress {
       this.eventCollector.storeEvent(event)
       await this.hookService.executeHook(new Hooks.BeforeOutgoingMiddleware(this.api, event))
     }
-
-    // Todo : remove this when channel renderers for builtin types are no longer needed
-    this.eventEngine.renderForChannel = this.cmsService.renderForChannel.bind(this.cmsService)
 
     this.decisionEngine.onBeforeSuggestionsElection = async (
       sessionId: string,
@@ -493,7 +491,7 @@ export class Botpress {
 
     await this.dataRetentionService.initialize()
 
-    await this.stateManager.initialize()
+    this.stateManager.initialize()
     await this.logJanitor.start()
     await this.dialogJanitor.start()
     await this.monitoringService.start()

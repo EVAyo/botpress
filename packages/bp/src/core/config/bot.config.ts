@@ -65,7 +65,7 @@ export interface BotDialogConfig {
   /**
    * The interval until the context of the session expires.
    * This clears the position of the user in the flow and triggers the before_session_timeout hook
-   * @default 5m
+   * @default 25m
    */
   timeoutInterval: string
   /**
@@ -98,14 +98,6 @@ export interface ConverseConfig {
 }
 
 export interface MessagingConfig {
-  /**
-   * Client id used to identify the bot on the messaging server
-   */
-  id: string
-  /**
-   * Client token used to authenticate requests made to the messaging server
-   */
-  token: string
   /**
    * Configurations of channels to be sent to the messaging server
    * You can find more about channel configurations here : https://botpress.com/docs/channels/faq

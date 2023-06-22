@@ -9,7 +9,9 @@
     "unassigned": "Unassigned",
     "assignedMe": "Assigned to Me",
     "assignedOther": "Assigned to Others",
-    "resolved": "Resolved"
+    "resolved": "Resolved",
+    "rejected": "Rejected",
+    "expired": "Expired"
   },
   "sortBy": "Sort By",
   "filterBy": "Filter By",
@@ -30,7 +32,9 @@
     "status": {
       "pending": "pending",
       "assigned": "assigned",
-      "resolved": "resolved"
+      "resolved": "resolved",
+      "rejected": "rejected",
+      "expired": "expired"
     },
     "assignedToAgent": "You've been assigned to an agent",
     "assignedToYou": "Conversation Handed to You",
@@ -38,6 +42,7 @@
     "resolve": "Resolve",
     "assigned": "Handoff {id} successfully assigned",
     "resolved": "Handoff {id} successfully resolved",
+    "rejected": "Handoff {id} successfully rejected",
     "you": "You",
     "from": "From {channel}"
   },

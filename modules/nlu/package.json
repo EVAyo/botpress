@@ -26,8 +26,8 @@
     "rimraf": "^3.0.2"
   },
   "dependencies": {
-    "@botpress/nlu-client": "0.1.4",
-    "axios": "^0.21.1",
+    "@botpress/nlu-client": "1.0.0",
+    "axios": "^0.21.2",
     "bluebird": "^3.5.3",
     "bluebird-global": "^1.0.1",
     "bluebird-retry": "^0.11.0",
@@ -43,17 +43,18 @@
     "mathjs": "^7.5.1",
     "moment": "^2.29.1",
     "ms": "^2.1.1",
-    "nanoid": "^2.0.1",
+    "nanoid": "^3.1.31",
     "semver": "^7.3.2",
     "slate": "^0.47.4",
     "slate-react": "^0.22.4",
     "slate-react-placeholder": "^0.2.4",
-    "tar": "^4.4.15",
+    "tar": "^4.4.19",
     "tmp": "^0.0.33",
     "yn": "^3.1.1"
   },
   "resolutions": {
     "fstream": ">=1.0.12",
-    "lodash": ">=4.17.21"
+    "lodash": ">=4.17.21",
+    "minipass": "<=2.9.0"
   }
 }

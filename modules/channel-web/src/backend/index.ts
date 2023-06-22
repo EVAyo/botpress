@@ -10,7 +10,9 @@ let db: WebchatDatabase
 const onServerStarted = async (bp: typeof sdk) => {
   db = new WebchatDatabase(bp)
   await db.initialize()
+}
 
+const onServerReady = async (bp: typeof sdk) => {
   await api(bp, db)
   await socket(bp, db)
 }
@@ -20,14 +22,10 @@ const onModuleUnmount = async (bp: typeof sdk) => {
   bp.http.deleteRouterForBot('channel-web')
 }
 
-const onBotUnmount = async (bp: typeof sdk, botId: string) => {
-  db.removeMessagingClient(botId)
-}
-
 const entryPoint: sdk.ModuleEntryPoint = {
   onServerStarted,
+  onServerReady,
   onModuleUnmount,
-  onBotUnmount,
   definition: {
     name: 'channel-web',
     fullName: 'Web Chat',

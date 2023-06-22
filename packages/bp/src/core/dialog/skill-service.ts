@@ -1,7 +1,7 @@
 import { ActionBuilderProps, Flow, FlowGenerationResult, FlowNode, NodeActionType, SkillFlow } from 'botpress/sdk'
 import { injectable } from 'inversify'
 import _ from 'lodash'
-import nanoid from 'nanoid/generate'
+import { customAlphabet } from 'nanoid'
 
 @injectable()
 export class SkillService {
@@ -21,7 +21,11 @@ export class SkillService {
     }
 
     // TODO change when studio is updated, since actual doesn't support catchall
-    return { flow: completeFlow, transitions: partialFlow.transitions }
+    return {
+      flow: completeFlow,
+      transitions: partialFlow.transitions,
+      ...(partialFlow.previewElements && { preview: partialFlow.previewElements })
+    }
   }
 
   private parseActionQuery(nodes): string[] | undefined {
@@ -55,11 +59,11 @@ export class SkillService {
     }
 
     _.forEach(partialFlow.nodes, node => {
-      defaultNode.id = nanoid('1234567890', 6)
+      defaultNode.id = customAlphabet('1234567890', 6)()
       node = _.defaults(node, defaultNode)
     })
 
-    const name = nanoid('1234567890', 6)
+    const name = customAlphabet('1234567890', 6)()
     const defaultFlow: Flow = {
       version: '0.0',
       name,

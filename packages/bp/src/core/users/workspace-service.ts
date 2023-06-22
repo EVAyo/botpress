@@ -22,7 +22,7 @@ import {
 } from 'core/users'
 import { inject, injectable, tagged } from 'inversify'
 import _ from 'lodash'
-import nanoid from 'nanoid/generate'
+import { customAlphabet } from 'nanoid'
 
 export const ROLLOUT_STRATEGIES: RolloutStrategy[] = [
   'anonymous',
@@ -48,10 +48,20 @@ export class WorkspaceService {
   ) {}
 
   async initialize(): Promise<void> {
-    await this.getWorkspaces().catch(async () => {
+    try {
+      const workspaces = await this.getWorkspaces()
+
+      for (const workspace of workspaces) {
+        if ((workspace.authStrategies || []).length === 0) {
+          this.logger.warn(
+            `Workspace [${workspace.name}] does not contain any Authentication Strategies ('authStrategies'). This can result in unwanted behavior.`
+          )
+        }
+      }
+    } catch {
       await this.save([defaultWorkspace])
       this.logger.info('Created workspace')
-    })
+    }
   }
 
   async getWorkspaces(): Promise<Workspace[]> {
@@ -221,7 +231,7 @@ export class WorkspaceService {
   }
 
   async resetInviteCode(workspaceId: string, allowedUsages: number = UNLIMITED): Promise<WorkspaceInviteCode> {
-    const inviteCode = `INV-${nanoid('1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ', 10)}`
+    const inviteCode = `INV-${customAlphabet('1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ', 10)()}`
     const newEntry = { workspaceId, inviteCode, allowedUsages }
 
     if (await this.inviteCodesRepo.getWorkspaceCode(workspaceId)) {
@@ -358,6 +368,15 @@ export class WorkspaceService {
   async hasPipeline(workspaceId: string): Promise<boolean> {
     const pipeline = await this.getPipeline(workspaceId)
     return !!pipeline && pipeline.length > 1
+  }
+
+  async isBotInWorkspace(workspaceId: string, botId: string): Promise<boolean> {
+    try {
+      const workspace = await this.findWorkspace(workspaceId)
+      return workspace.bots.includes(botId)
+    } catch (err) {
+      return false
+    }
   }
 
   // @deprecated
